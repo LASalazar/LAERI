@@ -1,0 +1,1732 @@
+cap log close
+log using "C:\Users\lsalazar\Syncplicity Folders\lsalazar (IT Admin)\LAERI\cff_laeri_collegegoing\log\hs_indicators_makedata", text replace
+
+//  program:    hs_indicators_makedata.do
+//  task:       This do file reads in various CDE school-level data files, formats
+//              and imputes variables corresponding to the "High School Level Data"
+//              section of the "Data Needs" document, and merges the files together
+//              into a master "CACountyHSData" dta file. 
+//  project:    CFFDataCompilation (project B)
+//  author:     LA 02/17/2015
+
+
+//  #0
+//  program setup
+version 12
+set more off
+clear all
+set linesize 80
+macro drop _all
+set type double
+
+cd "C:\Users\lsalazar\Syncplicity Folders\lsalazar (IT Admin)\LAERI\cff_laeri_collegegoing\source\cde_hs_dist_data"
+
+cd "I:\LAERI\cff_laeri_collegegoing\source\cde_hs_dist_data"
+
+//  #1
+//  Importing the CDE "pubschls" data from http://www.cde.ca.gov/ds/si/ds/pubschls.asp
+//  List of CA public schools with addresses and geolocation info
+import excel using "pubschls.xls", firstrow clear
+
+
+*destring CDSCode, replace
+
+*There is one duplicate observation (Santa Cruz Elementary School District is
+*recorded twice for some reason). I want to drop the first duplicate observation
+*and keep the second, which was updated more recently.
+sort CDSCode
+quietly by CDSCode:  gen dup = cond(_N==1,0,_n)
+drop if dup ==1
+drop dup
+
+*flagging schools that either "offer" or "serve" 9th, 10th, 11th, or 12th grade
+gen GSserved9  = regexm(GSserved, "9")
+gen GSoffered9 = regexm(GSoffered, "9")
+
+gen GSserved10 = regexm(GSserved, "10")
+gen GSoffered10 = regexm(GSoffered, "10")
+
+gen GSserved11 = regexm(GSserved, "11")
+gen GSoffered11 = regexm(GSoffered, "11")
+
+gen GSserved12 = regexm(GSserved, "12")
+gen GSoffered12 = regexm(GSoffered, "12")
+
+gen GSservedHS  = 1 if GSserved9  == 1 | GSserved10  == 1 | GSserved11  == 1 | GSserved12  == 1
+recode GSservedHS .=0
+gen GSofferedHS = 1 if GSoffered9 == 1 | GSoffered10 == 1 | GSoffered11 == 1 | GSoffered12 == 1 
+recode GSofferedHS .=0
+
+*making a "universe" dummy for active schools that serve or offer 9th, 10th, 11th, or 12th grade
+gen universe =.
+replace universe=1 if GSservedHS ==1 | GSofferedHS ==1
+replace universe=0 if StatusType == "Closed" | StatusType == "Merged"
+recode universe .=0
+
+*recoding "Charter" = "Y" for "Sequoia Charter," which has a Charter Number and "Charter" in the name
+replace Charter = "Y" if Charter == "N" & CharterNum !="" & universe==1 & County=="Los Angeles" & CDSCode == "19651360112359"
+
+*14 other possibilities where there could be Charter Schools that are listed as "N" in Charter
+gen possiblecharter = regexm(School, "Charter")
+list CDSCode County District School CharterNum if possiblecharter==1 & (Charter=="N" | missing(Charter)) & !missing(CharterNum)
+
+*recoding charter to be "Y" for schools that have Charter in the name and have a Charter #
+replace Charter = "Y" if Charter == "N" & CDSCode=="01611766118897"
+replace Charter = "Y" if Charter == "N" & CDSCode=="01612596115711"
+replace Charter = "Y" if Charter == "N" & CDSCode=="01612596117576"
+replace Charter = "Y" if Charter == "N" & CDSCode=="09100900118117"
+replace Charter = "Y" if Charter == "N" & CDSCode=="10621660113720"
+replace Charter = "Y" if Charter == "N" & CDSCode=="19647336017529"
+replace Charter = "Y" if Charter == "N" & CDSCode=="19647336017701"
+replace Charter = "Y" if Charter == "N" & CDSCode=="21654746118384"
+replace Charter = "Y" if Charter == "N" & CDSCode=="29663730109801"
+replace Charter = "Y" if Charter == "N" & CDSCode=="34673633430840"
+replace Charter = "Y" if Charter == "N" & CDSCode=="37683386113989"
+replace Charter = "Y" if Charter == "N" & CDSCode=="47702924730180"
+replace Charter = "Y" if Charter == "N" & CDSCode=="49709126118020"
+replace Charter = "Y" if Charter == "N" & CDSCode=="54718030112466"
+
+
+
+*save "C:\Users\lsalazar\Syncplicity Folders\lsalazar (IT Admin)\LAERI\cff_laeri_collegegoing\dta\cde_hs_data_reformat\pubschls_reformat", replace
+save "I:\LAERI\cff_laeri_collegegoing\dta\cde_hs_data_reformat\pubschls_reformat", replace
+
+clear
+set more off
+
+
+//  #2
+//  Importing the CDE "frpm1314" data from http://www.cde.ca.gov/ds/sd/sd/filessp.asp
+//  Counts and percents of free/reduced-price meal eligible students
+import excel using "frpm1415.xls", firstrow sheet("FRPM School-Level Data ") cellrange(A2:AB10395) clear
+
+*CDSCode in the other files is a concatenation of "County Code," "District Code" & "School Code"
+gen CDSCode = CountyCode + DistrictCode + SchoolCode
+
+*destring *, replace
+
+*creating new variables according to naming conventions
+gen       cdfmgtbc15 = FreeMealCountK12
+gen       cdfmgtbp15 = 100*PercentEligibleFreeK1
+gen       cdfrgtbc15 = FRPMCountK12
+gen       cdfrgtbp15 = 100*PercentEligibleFRPMK1
+
+label var cdfmgtbc15 "# of free meal elig. students (all races, both sexes) for 2014-15"
+label var cdfmgtbp15 "% of students free meal elig. (all races, both sexes) for 2014-15"
+label var cdfrgtbc15 "# of free or red. price meal elig. students (all races, both sexes) for 2014-15"
+label var cdfrgtbp15 "% of students free or red. price meal elig. (all races, both sexes) for 2014-15"
+
+*appending "frpm1415" to county/district/school names for later reference
+foreach var in CountyName DistrictName SchoolName{
+  rename `var' frpm1415_`var'
+}
+
+*keeping just the variables of interest (% eligible, not headcounts) and county/district/school names
+keep        ///
+CDSCode     ///
+cdfmgtbp15  ///
+cdfrgtbp15  ///
+frpm1415_CountyName ///
+frpm1415_DistrictName ///
+frpm1415_SchoolName
+
+
+*save "C:\Users\lsalazar\Syncplicity Folders\lsalazar (IT Admin)\LAERI\cff_laeri_collegegoing\dta\cde_hs_data_reformat\frpm1415_reformat", replace
+save "I:\LAERI\cff_laeri_collegegoing\dta\cde_hs_data_reformat\frpm1415_reformat", replace
+
+
+clear
+set more off
+
+//  #3
+//  Importing the 2014-15 CDE "filesenr.asp.txt" data from http://www.cde.ca.gov/ds/sd/sd/filesenr.asp
+//  Enrollment counts by grade by sex by ethnicity
+insheet using "filesenr1415.csv"
+
+*fixing the name of the "CDSCode" variable that will be basis for later merge
+
+gen districtcode = substr(cds_code,4,5)
+gen countycode = substr(cds_code,2,2)
+gen schoolcode = substr(cds_code,9,7)
+
+gen CDSCode = countycode + districtcode + schoolcode
+drop cds_code
+
+*changing CDSCode from string to numeric for later merge
+*destring CDSCode, replace
+
+*recoding and labeling categorical variables
+label var ethnic    "race/ethnicity"
+label var gender    "gender"
+label var gr_12     "number of enrolled twelfth-graders"
+label var enr_total "total enrolled students"
+
+
+label define lethnic 0 "not reported" 1 "American Indian or AK Native" ///
+   2 "Asian" 3 "Pacific Islander" 4 "Filipino" 5 "Hispanic or Latino" ///
+   6 "Black" 7 "White" 9 "Two or More Races"
+label values ethnic lethnic
+
+replace gender="1" if gender=="M"
+replace gender="0" if gender=="F"
+destring gender, replace
+
+label define lgender 0 "Female" 1 "Male"
+label values gender lgender
+
+*generating counts of seniors for each school
+bysort CDSCode: egen cd12gtbc15  = sum(gr_12)
+bysort CDSCode: egen cd12aibc15  = sum(gr_12) if ethnic==1
+bysort CDSCode: egen cd12asbc15  = sum(gr_12) if ethnic==2
+bysort CDSCode: egen cd12pibc15  = sum(gr_12) if ethnic==3
+bysort CDSCode: egen cd12fpbc15  = sum(gr_12) if ethnic==4
+bysort CDSCode: egen cd12ltbc15  = sum(gr_12) if ethnic==5
+bysort CDSCode: egen cd12blbc15  = sum(gr_12) if ethnic==6
+bysort CDSCode: egen cd12whbc15  = sum(gr_12) if ethnic==7
+bysort CDSCode: egen cd12mrbc15  = sum(gr_12) if ethnic==9
+bysort CDSCode: egen cd12nrbc15  = sum(gr_12) if ethnic==0
+                               
+bysort CDSCode: egen cd12gtmc15  = sum(gr_12) if gender==1
+bysort CDSCode: egen cd12aimc15  = sum(gr_12) if ethnic==1 & gender==1
+bysort CDSCode: egen cd12asmc15  = sum(gr_12) if ethnic==2 & gender==1
+bysort CDSCode: egen cd12pimc15  = sum(gr_12) if ethnic==3 & gender==1
+bysort CDSCode: egen cd12fpmc15  = sum(gr_12) if ethnic==4 & gender==1
+bysort CDSCode: egen cd12ltmc15  = sum(gr_12) if ethnic==5 & gender==1
+bysort CDSCode: egen cd12blmc15  = sum(gr_12) if ethnic==6 & gender==1
+bysort CDSCode: egen cd12whmc15  = sum(gr_12) if ethnic==7 & gender==1
+bysort CDSCode: egen cd12mrmc15  = sum(gr_12) if ethnic==9 & gender==1
+bysort CDSCode: egen cd12nrmc15  = sum(gr_12) if ethnic==0 & gender==1
+
+bysort CDSCode: egen cd12gtfc15  = sum(gr_12) if gender==0
+bysort CDSCode: egen cd12aifc15  = sum(gr_12) if ethnic==1 & gender==0
+bysort CDSCode: egen cd12asfc15  = sum(gr_12) if ethnic==2 & gender==0
+bysort CDSCode: egen cd12pifc15  = sum(gr_12) if ethnic==3 & gender==0
+bysort CDSCode: egen cd12fpfc15  = sum(gr_12) if ethnic==4 & gender==0
+bysort CDSCode: egen cd12ltfc15  = sum(gr_12) if ethnic==5 & gender==0
+bysort CDSCode: egen cd12blfc15  = sum(gr_12) if ethnic==6 & gender==0
+bysort CDSCode: egen cd12whfc15  = sum(gr_12) if ethnic==7 & gender==0
+bysort CDSCode: egen cd12mrfc15  = sum(gr_12) if ethnic==9 & gender==0
+bysort CDSCode: egen cd12nrfc15  = sum(gr_12) if ethnic==0 & gender==0           
+
+
+*generating counts of enrolled students (K-12) for each school
+bysort CDSCode: egen cdk12gtbc15  = sum(enr_total)
+bysort CDSCode: egen cdk12aibc15  = sum(enr_total) if ethnic==1
+bysort CDSCode: egen cdk12asbc15  = sum(enr_total) if ethnic==2
+bysort CDSCode: egen cdk12pibc15  = sum(enr_total) if ethnic==3
+bysort CDSCode: egen cdk12fpbc15  = sum(enr_total) if ethnic==4
+bysort CDSCode: egen cdk12ltbc15  = sum(enr_total) if ethnic==5
+bysort CDSCode: egen cdk12blbc15  = sum(enr_total) if ethnic==6
+bysort CDSCode: egen cdk12whbc15  = sum(enr_total) if ethnic==7
+bysort CDSCode: egen cdk12mrbc15  = sum(enr_total) if ethnic==9
+bysort CDSCode: egen cdk12nrbc15  = sum(enr_total) if ethnic==0
+                                
+bysort CDSCode: egen cdk12gtmc15  = sum(enr_total) if gender==1
+bysort CDSCode: egen cdk12aimc15  = sum(enr_total) if ethnic==1 & gender==1
+bysort CDSCode: egen cdk12asmc15  = sum(enr_total) if ethnic==2 & gender==1
+bysort CDSCode: egen cdk12pimc15  = sum(enr_total) if ethnic==3 & gender==1
+bysort CDSCode: egen cdk12fpmc15  = sum(enr_total) if ethnic==4 & gender==1
+bysort CDSCode: egen cdk12ltmc15  = sum(enr_total) if ethnic==5 & gender==1
+bysort CDSCode: egen cdk12blmc15  = sum(enr_total) if ethnic==6 & gender==1
+bysort CDSCode: egen cdk12whmc15  = sum(enr_total) if ethnic==7 & gender==1
+bysort CDSCode: egen cdk12mrmc15  = sum(enr_total) if ethnic==9 & gender==1
+bysort CDSCode: egen cdk12nrmc15  = sum(enr_total) if ethnic==0 & gender==1
+                            
+bysort CDSCode: egen cdk12gtfc15  = sum(enr_total) if gender==0
+bysort CDSCode: egen cdk12aifc15  = sum(enr_total) if ethnic==1 & gender==0
+bysort CDSCode: egen cdk12asfc15  = sum(enr_total) if ethnic==2 & gender==0
+bysort CDSCode: egen cdk12pifc15  = sum(enr_total) if ethnic==3 & gender==0
+bysort CDSCode: egen cdk12fpfc15  = sum(enr_total) if ethnic==4 & gender==0
+bysort CDSCode: egen cdk12ltfc15  = sum(enr_total) if ethnic==5 & gender==0
+bysort CDSCode: egen cdk12blfc15  = sum(enr_total) if ethnic==6 & gender==0
+bysort CDSCode: egen cdk12whfc15  = sum(enr_total) if ethnic==7 & gender==0
+bysort CDSCode: egen cdk12mrfc15  = sum(enr_total) if ethnic==9 & gender==0
+bysort CDSCode: egen cdk12nrfc15  = sum(enr_total) if ethnic==0 & gender==0
+
+                   
+
+*collapsing dataset to get one observation per school with all desired counts
+collapse (firstnm) county school district cd12* cdk12*, by(CDSCode)
+
+*replacing "missing" (unreported) counts with zeros
+replace cd12gtbc15 =0 if cd12gtbc15 ==.
+replace cd12aibc15 =0 if cd12aibc15 ==.
+replace cd12asbc15 =0 if cd12asbc15 ==.
+replace cd12pibc15 =0 if cd12pibc15 ==.
+replace cd12fpbc15 =0 if cd12fpbc15 ==.
+replace cd12ltbc15 =0 if cd12ltbc15 ==.
+replace cd12blbc15 =0 if cd12blbc15 ==.
+replace cd12whbc15 =0 if cd12whbc15 ==.
+replace cd12mrbc15 =0 if cd12mrbc15 ==.
+replace cd12nrbc15 =0 if cd12nrbc15 ==.
+                                     
+replace cd12gtmc15 =0 if cd12gtmc15 ==.
+replace cd12aimc15 =0 if cd12aimc15 ==.
+replace cd12asmc15 =0 if cd12asmc15 ==.
+replace cd12pimc15 =0 if cd12pimc15 ==.
+replace cd12fpmc15 =0 if cd12fpmc15 ==.
+replace cd12ltmc15 =0 if cd12ltmc15 ==.
+replace cd12blmc15 =0 if cd12blmc15 ==.
+replace cd12whmc15 =0 if cd12whmc15 ==.
+replace cd12mrmc15 =0 if cd12mrmc15 ==.
+replace cd12nrmc15 =0 if cd12nrmc15 ==.
+                                     
+replace cd12gtfc15 =0 if cd12gtfc15 ==.
+replace cd12aifc15 =0 if cd12aifc15 ==.
+replace cd12asfc15 =0 if cd12asfc15 ==.
+replace cd12pifc15 =0 if cd12pifc15 ==.
+replace cd12fpfc15 =0 if cd12fpfc15 ==.
+replace cd12ltfc15 =0 if cd12ltfc15 ==.
+replace cd12blfc15 =0 if cd12blfc15 ==.
+replace cd12whfc15 =0 if cd12whfc15 ==.
+replace cd12mrfc15 =0 if cd12mrfc15 ==.
+replace cd12nrfc15 =0 if cd12nrfc15 ==.
+
+
+
+
+replace cdk12gtbc15 =0 if  cdk12gtbc15 ==.
+replace cdk12aibc15 =0 if  cdk12aibc15 ==.
+replace cdk12asbc15 =0 if  cdk12asbc15 ==.
+replace cdk12pibc15 =0 if  cdk12pibc15 ==.
+replace cdk12fpbc15 =0 if  cdk12fpbc15 ==.
+replace cdk12ltbc15 =0 if  cdk12ltbc15 ==.
+replace cdk12blbc15 =0 if  cdk12blbc15 ==.
+replace cdk12whbc15 =0 if  cdk12whbc15 ==.
+replace cdk12mrbc15 =0 if  cdk12mrbc15 ==.
+replace cdk12nrbc15 =0 if  cdk12nrbc15 ==.
+                                        
+replace cdk12gtmc15 =0 if  cdk12gtmc15 ==.
+replace cdk12aimc15 =0 if  cdk12aimc15 ==.
+replace cdk12asmc15 =0 if  cdk12asmc15 ==.
+replace cdk12pimc15 =0 if  cdk12pimc15 ==.
+replace cdk12fpmc15 =0 if  cdk12fpmc15 ==.
+replace cdk12ltmc15 =0 if  cdk12ltmc15 ==.
+replace cdk12blmc15 =0 if  cdk12blmc15 ==.
+replace cdk12whmc15 =0 if  cdk12whmc15 ==.
+replace cdk12mrmc15 =0 if  cdk12mrmc15 ==.
+replace cdk12nrmc15 =0 if  cdk12nrmc15 ==.
+                                        
+replace cdk12gtfc15 =0 if  cdk12gtfc15 ==.
+replace cdk12aifc15 =0 if  cdk12aifc15 ==.
+replace cdk12asfc15 =0 if  cdk12asfc15 ==.
+replace cdk12pifc15 =0 if  cdk12pifc15 ==.
+replace cdk12fpfc15 =0 if  cdk12fpfc15 ==.
+replace cdk12ltfc15 =0 if  cdk12ltfc15 ==.
+replace cdk12blfc15 =0 if  cdk12blfc15 ==.
+replace cdk12whfc15 =0 if  cdk12whfc15 ==.
+replace cdk12mrfc15 =0 if  cdk12mrfc15 ==.
+replace cdk12nrfc15 =0 if  cdk12nrfc15 ==.
+
+
+*computing racial distribution of student body
+gen cdk12aibp15 = 100*(cdk12aibc15/cdk12gtbc15)
+gen cdk12asbp15 = 100*(cdk12asbc15/cdk12gtbc15)
+gen cdk12pibp15 = 100*(cdk12pibc15/cdk12gtbc15)
+gen cdk12fpbp15 = 100*(cdk12fpbc15/cdk12gtbc15)
+gen cdk12ltbp15 = 100*(cdk12ltbc15/cdk12gtbc15)
+gen cdk12blbp15 = 100*(cdk12blbc15/cdk12gtbc15)
+gen cdk12whbp15 = 100*(cdk12whbc15/cdk12gtbc15)
+gen cdk12mrbp15 = 100*(cdk12mrbc15/cdk12gtbc15)
+gen cdk12nrbp15 = 100*(cdk12nrbc15/cdk12gtbc15)
+
+
+label var cdk12aibp15 "% Am. Ind or AK native non-Hisp. among enrolled students, 2014-15"
+label var cdk12asbp15 "% Asian non-Hisp. among enrolled students, 2014-15"
+label var cdk12pibp15 "% Pac. Isl. non-Hisp. among enrolled students, 2014-15"
+label var cdk12fpbp15 "% Filipino non-Hisp. among enrolled students, 2014-15"
+label var cdk12ltbp15 "% Hispanic or Latino among enrolled students, 2014-15"
+label var cdk12blbp15 "% Af. Am. non-Hisp. among enrolled students, 2014-15"
+label var cdk12whbp15 "% White non-Hisp. among enrolled students, 2014-15"
+label var cdk12mrbp15 "% 2 or more races non-Hisp. among enrolled students, 2014-15"
+label var cdk12nrbp15 "% race missing among enrolled students, 2014-15"                   
+
+
+
+
+label var            cdk12gtbc15  "# of enrolled students, all grades (all races, both sexes), 2014-15"                                     
+label var            cdk12aibc15  "# of enrolled students, all grades (Am. Ind or AK native non-Hisp, both sexes), 2014-15"
+label var            cdk12asbc15  "# of enrolled students, all grades (Asian non-Hisp, both sexes), 2014-15"               
+label var            cdk12pibc15  "# of enrolled students, all grades (Pac. Isl. non-Hisp, both sexes), 2014-15"           
+label var            cdk12fpbc15  "# of enrolled students, all grades (Filipino non-Hisp, both sexes), 2014-15"            
+label var            cdk12ltbc15  "# of enrolled students, all grades (Hispanic or Latino, both sexes), 2014-15"           
+label var            cdk12blbc15  "# of enrolled students, all grades (Af. Am. non-Hisp, both sexes), 2014-15"             
+label var            cdk12whbc15  "# of enrolled students, all grades (White non-Hisp, both sexes), 2014-15"               
+label var            cdk12mrbc15  "# of enrolled students, all grades (2 or more races non-Hisp, both sexes), 2014-15"
+label var            cdk12nrbc15  "# of enrolled students, all grades (race missing, both sexes), 2014-15"
+
+label var            cdk12gtmc15  "# of enrolled students, all grades (all races, male), 2014-15"                                     
+label var            cdk12aimc15  "# of enrolled students, all grades (Am. Ind or AK native non-Hisp, male), 2014-15"
+label var            cdk12asmc15  "# of enrolled students, all grades (Asian non-Hisp, male), 2014-15"               
+label var            cdk12pimc15  "# of enrolled students, all grades (Pac. Isl. non-Hisp, male), 2014-15"           
+label var            cdk12fpmc15  "# of enrolled students, all grades (Filipino non-Hisp, male), 2014-15"            
+label var            cdk12ltmc15  "# of enrolled students, all grades (Hispanic or Latino, male), 2014-15"           
+label var            cdk12blmc15  "# of enrolled students, all grades (Af. Am. non-Hisp, male), 2014-15"             
+label var            cdk12whmc15  "# of enrolled students, all grades (White non-Hisp, male), 2014-15"               
+label var            cdk12mrmc15  "# of enrolled students, all grades (2 or more races non-Hisp, male), 2014-15"
+label var            cdk12nrmc15  "# of enrolled students, all grades (race missing, male), 2014-15"
+                            
+label var            cdk12gtfc15  "# of enrolled students, all grades (all races, female), 2014-15"                                     
+label var            cdk12aifc15  "# of enrolled students, all grades (Am. Ind or AK native non-Hisp, female), 2014-15"
+label var            cdk12asfc15  "# of enrolled students, all grades (Asian non-Hisp, female), 2014-15"               
+label var            cdk12pifc15  "# of enrolled students, all grades (Pac. Isl. non-Hisp, female), 2014-15"           
+label var            cdk12fpfc15  "# of enrolled students, all grades (Filipino non-Hisp, female), 2014-15"            
+label var            cdk12ltfc15  "# of enrolled students, all grades (Hispanic or Latino, female), 2014-15"           
+label var            cdk12blfc15  "# of enrolled students, all grades (Af. Am. non-Hisp, female), 2014-15"             
+label var            cdk12whfc15  "# of enrolled students, all grades (White non-Hisp, female), 2014-15"               
+label var            cdk12mrfc15  "# of enrolled students, all grades (2 or more races non-Hisp, female), 2014-15"
+label var            cdk12nrfc15  "# of enrolled students, all grades (race missing, female), 2014-15"     
+                                                                                
+
+
+
+
+
+label var            cd12gtbc15  "# of enrolled 12th graders (all races, both sexes), 2014-15"                                     
+label var            cd12aibc15  "# of enrolled 12th graders (Am. Ind or AK native non-Hisp, both sexes), 2014-15"
+label var            cd12asbc15  "# of enrolled 12th graders (Asian non-Hisp, both sexes), 2014-15"               
+label var            cd12pibc15  "# of enrolled 12th graders (Pac. Isl. non-Hisp, both sexes), 2014-15"           
+label var            cd12fpbc15  "# of enrolled 12th graders (Filipino non-Hisp, both sexes), 2014-15"            
+label var            cd12ltbc15  "# of enrolled 12th graders (Hispanic or Latino, both sexes), 2014-15"           
+label var            cd12blbc15  "# of enrolled 12th graders (Af. Am. non-Hisp, both sexes), 2014-15"             
+label var            cd12whbc15  "# of enrolled 12th graders (White non-Hisp, both sexes), 2014-15"               
+label var            cd12mrbc15  "# of enrolled 12th graders (2 or more races non-Hisp, both sexes), 2014-15"     
+label var            cd12nrbc15  "# of enrolled 12th graders (race missing, both sexes), 2014-15"
+
+label var            cd12gtmc15  "# of enrolled 12th graders (all races, male), 2014-15"                                     
+label var            cd12aimc15  "# of enrolled 12th graders (Am. Ind or AK native non-Hisp, male), 2014-15"
+label var            cd12asmc15  "# of enrolled 12th graders (Asian non-Hisp, male), 2014-15"               
+label var            cd12pimc15  "# of enrolled 12th graders (Pac. Isl. non-Hisp, male), 2014-15"           
+label var            cd12fpmc15  "# of enrolled 12th graders (Filipino non-Hisp, male), 2014-15"            
+label var            cd12ltmc15  "# of enrolled 12th graders (Hispanic or Latino, male), 2014-15"           
+label var            cd12blmc15  "# of enrolled 12th graders (Af. Am. non-Hisp, male), 2014-15"             
+label var            cd12whmc15  "# of enrolled 12th graders (White non-Hisp, male), 2014-15"               
+label var            cd12mrmc15  "# of enrolled 12th graders (2 or more races non-Hisp, male), 2014-15"     
+label var            cd12nrmc15  "# of enrolled 12th graders (race missing, male), 2014-15"
+                           
+label var            cd12gtfc15  "# of enrolled 12th graders (all races, female), 2014-15"                                     
+label var            cd12aifc15  "# of enrolled 12th graders (Am. Ind or AK native non-Hisp, female), 2014-15"
+label var            cd12asfc15  "# of enrolled 12th graders (Asian non-Hisp, female), 2014-15"               
+label var            cd12pifc15  "# of enrolled 12th graders (Pac. Isl. non-Hisp, female), 2014-15"           
+label var            cd12fpfc15  "# of enrolled 12th graders (Filipino non-Hisp, female), 2014-15"            
+label var            cd12ltfc15  "# of enrolled 12th graders (Hispanic or Latino, female), 2014-15"           
+label var            cd12blfc15  "# of enrolled 12th graders (Af. Am. non-Hisp, female), 2014-15"             
+label var            cd12whfc15  "# of enrolled 12th graders (White non-Hisp, female), 2014-15"               
+label var            cd12mrfc15  "# of enrolled 12th graders (2 or more races non-Hisp, female), 2014-15"     
+label var            cd12nrfc15  "# of enrolled 12th graders (race missing, female), 2014-15"
+                                                                
+
+
+
+
+*checking the sums of the percents
+gen pct100 = ///
+cdk12nrbp15 + ///
+cdk12aibp15 + ///
+cdk12asbp15 + ///
+cdk12pibp15 + ///
+cdk12fpbp15 + ///
+cdk12ltbp15 + ///
+cdk12blbp15 + ///
+cdk12whbp15 + ///
+cdk12mrbp15
+
+summ pct100
+*they all add up to 100 percent
+drop pct100
+
+
+
+//MAY WANT TO CONVERT ALL MISSING VALUES TO "0"
+//BECAUSE MISSING SEEMS TO IMPLY THAT THERE WAS NO STUDENT OF THAT RACE OR SEX AT THE SCHOOL
+*recode * .=0
+
+*Appending "filesenr1415" to county/district/school names for later reference
+foreach var in county district school{
+  rename `var' filesenr1415_`var'
+}
+
+
+keep                  ///
+CDSCode               ///
+filesenr1415_county   ///
+filesenr1415_district ///
+filesenr1415_school   ///
+cdk12aibp15           ///
+cdk12asbp15           ///
+cdk12pibp15           ///
+cdk12fpbp15           ///
+cdk12ltbp15           ///
+cdk12blbp15           ///
+cdk12whbp15           ///
+cdk12mrbp15           ///
+cdk12nrbp15           ///
+cd12gtbc15            ///
+cd12aibc15            ///
+cd12asbc15            ///
+cd12pibc15            ///
+cd12fpbc15            ///
+cd12ltbc15            ///
+cd12blbc15            ///
+cd12whbc15            ///
+cd12mrbc15            ///
+cd12nrbc15            ///
+cd12gtmc15            ///
+cd12aimc15            ///
+cd12asmc15            ///
+cd12pimc15            ///
+cd12fpmc15            ///
+cd12ltmc15            ///
+cd12blmc15            ///
+cd12whmc15            ///
+cd12mrmc15            ///
+cd12nrmc15            ///    
+cd12gtfc15            ///
+cd12aifc15            ///
+cd12asfc15            ///
+cd12pifc15            ///
+cd12fpfc15            ///
+cd12ltfc15            ///
+cd12blfc15            ///
+cd12whfc15            ///
+cd12mrfc15            ///
+cd12nrfc15
+
+
+
+order                 ///
+CDSCode               ///
+filesenr1415_county   ///
+filesenr1415_district ///
+filesenr1415_school   ///
+cdk12aibp15           ///
+cdk12asbp15           ///
+cdk12pibp15           ///
+cdk12fpbp15           ///
+cdk12ltbp15           ///
+cdk12blbp15           ///
+cdk12whbp15           ///
+cdk12mrbp15           ///
+cdk12nrbp15           ///
+cd12gtbc15            ///
+cd12aibc15            ///
+cd12asbc15            ///
+cd12pibc15            ///
+cd12fpbc15            ///
+cd12ltbc15            ///
+cd12blbc15            ///
+cd12whbc15            ///
+cd12mrbc15            ///
+cd12nrbc15            ///
+cd12gtmc15            ///
+cd12aimc15            ///
+cd12asmc15            ///
+cd12pimc15            ///
+cd12fpmc15            ///
+cd12ltmc15            ///
+cd12blmc15            ///
+cd12whmc15            ///
+cd12mrmc15            ///
+cd12nrmc15            ///    
+cd12gtfc15            ///
+cd12aifc15            ///
+cd12asfc15            ///
+cd12pifc15            ///
+cd12fpfc15            ///
+cd12ltfc15            ///
+cd12blfc15            ///
+cd12whfc15            ///
+cd12mrfc15            ///
+cd12nrfc15
+
+
+
+
+*save "C:\Users\lsalazar\Syncplicity Folders\lsalazar (IT Admin)\LAERI\cff_laeri_collegegoing\dta\cde_hs_data_reformat\filesenr1415_reformat", replace
+save "I:\LAERI\cff_laeri_collegegoing\dta\cde_hs_data_reformat\filesenr1415_reformat", replace
+
+clear
+set more off
+
+//  #4
+//  Importing the CDE "filescohort" data from http://www.cde.ca.gov/ds/sd/sd/filescohort.asp
+//  Cohort outcomes including graduation, dropout, GED rates, stratified by sex, race, ELL, migrant, socioeconomically disadvantaged
+insheet using "filescohort.csv"
+
+*recoding missing data in variables of interest from "*" to "."
+foreach var of varlist numcohort numgraduates numdropouts numspecialeducation numstillenrolled numged {
+  replace `var' = "." if `var' == "*"
+}
+destring *, replace
+
+*fixing the name of the "CDSCode" variable that will be basis for later merge
+
+gen districtcode = substr(cds,4,5)
+gen countycode = substr(cds,2,2)
+gen schoolcode = substr(cds,9,7)
+
+gen CDSCode = countycode + districtcode + schoolcode
+
+drop cds
+
+/// REPLACING GRAD COUNTS AND RATES AS MISSING IF agglevel != "S" [i.e. school-level]
+
+*cohort grad numbers (counts) by race and sex
+gen cdgrgtbc14 = numgraduates if subgroup == "All" & subgrouptype == "All" & agglevel == "S"
+gen cdgraibc14 = numgraduates if subgroup == "All" & subgrouptype =="1"    & agglevel == "S"
+gen cdgrasbc14 = numgraduates if subgroup == "All" & subgrouptype =="2"    & agglevel == "S"
+gen cdgrpibc14 = numgraduates if subgroup == "All" & subgrouptype =="3"    & agglevel == "S"
+gen cdgrfpbc14 = numgraduates if subgroup == "All" & subgrouptype =="4"    & agglevel == "S"
+gen cdgrltbc14 = numgraduates if subgroup == "All" & subgrouptype =="5"    & agglevel == "S"
+gen cdgrblbc14 = numgraduates if subgroup == "All" & subgrouptype =="6"    & agglevel == "S"
+gen cdgrwhbc14 = numgraduates if subgroup == "All" & subgrouptype =="7"    & agglevel == "S"
+gen cdgrmrbc14 = numgraduates if subgroup == "All" & subgrouptype =="9"    & agglevel == "S"
+gen cdgrnrbc14 = numgraduates if subgroup == "All" & subgrouptype =="0"    & agglevel == "S"
+
+gen cdgrsdbc14 = numgraduates if subgroup == "SD"  & subgrouptype =="All"  & agglevel == "S"
+
+gen cdgrgtmc14 = numgraduates if subgroup == "MAL" & subgrouptype == "All" & agglevel == "S"
+gen cdgraimc14 = numgraduates if subgroup == "MAL" & subgrouptype =="1"    & agglevel == "S"
+gen cdgrasmc14 = numgraduates if subgroup == "MAL" & subgrouptype =="2"    & agglevel == "S"
+gen cdgrpimc14 = numgraduates if subgroup == "MAL" & subgrouptype =="3"    & agglevel == "S"
+gen cdgrfpmc14 = numgraduates if subgroup == "MAL" & subgrouptype =="4"    & agglevel == "S"
+gen cdgrltmc14 = numgraduates if subgroup == "MAL" & subgrouptype =="5"    & agglevel == "S"
+gen cdgrblmc14 = numgraduates if subgroup == "MAL" & subgrouptype =="6"    & agglevel == "S"
+gen cdgrwhmc14 = numgraduates if subgroup == "MAL" & subgrouptype =="7"    & agglevel == "S"
+gen cdgrmrmc14 = numgraduates if subgroup == "MAL" & subgrouptype =="9"    & agglevel == "S"
+gen cdgrnrmc14 = numgraduates if subgroup == "MAL" & subgrouptype =="0"    & agglevel == "S"
+
+gen cdgrgtfc14 = numgraduates if subgroup == "FEM" & subgrouptype == "All" & agglevel == "S"
+gen cdgraifc14 = numgraduates if subgroup == "FEM" & subgrouptype =="1"    & agglevel == "S"
+gen cdgrasfc14 = numgraduates if subgroup == "FEM" & subgrouptype =="2"    & agglevel == "S"
+gen cdgrpifc14 = numgraduates if subgroup == "FEM" & subgrouptype =="3"    & agglevel == "S"
+gen cdgrfpfc14 = numgraduates if subgroup == "FEM" & subgrouptype =="4"    & agglevel == "S"
+gen cdgrltfc14 = numgraduates if subgroup == "FEM" & subgrouptype =="5"    & agglevel == "S"
+gen cdgrblfc14 = numgraduates if subgroup == "FEM" & subgrouptype =="6"    & agglevel == "S"
+gen cdgrwhfc14 = numgraduates if subgroup == "FEM" & subgrouptype =="7"    & agglevel == "S"
+gen cdgrmrfc14 = numgraduates if subgroup == "FEM" & subgrouptype =="9"    & agglevel == "S"
+gen cdgrnrfc14 = numgraduates if subgroup == "FEM" & subgrouptype =="0"    & agglevel == "S"
+
+
+
+*cohort grad rates (percent) by race and sex
+gen cdgrgtbp14 = cohortgraduationrate if subgroup == "All" & subgrouptype == "All" & numgraduates !=. & agglevel == "S"
+gen cdgraibp14 = cohortgraduationrate if subgroup == "All" & subgrouptype =="1"    & numgraduates !=. & agglevel == "S"
+gen cdgrasbp14 = cohortgraduationrate if subgroup == "All" & subgrouptype =="2"    & numgraduates !=. & agglevel == "S"
+gen cdgrpibp14 = cohortgraduationrate if subgroup == "All" & subgrouptype =="3"    & numgraduates !=. & agglevel == "S"
+gen cdgrfpbp14 = cohortgraduationrate if subgroup == "All" & subgrouptype =="4"    & numgraduates !=. & agglevel == "S"
+gen cdgrltbp14 = cohortgraduationrate if subgroup == "All" & subgrouptype =="5"    & numgraduates !=. & agglevel == "S"
+gen cdgrblbp14 = cohortgraduationrate if subgroup == "All" & subgrouptype =="6"    & numgraduates !=. & agglevel == "S"
+gen cdgrwhbp14 = cohortgraduationrate if subgroup == "All" & subgrouptype =="7"    & numgraduates !=. & agglevel == "S"
+gen cdgrmrbp14 = cohortgraduationrate if subgroup == "All" & subgrouptype =="9"    & numgraduates !=. & agglevel == "S"
+gen cdgrnrbp14 = cohortgraduationrate if subgroup == "All" & subgrouptype =="0"    & numgraduates !=. & agglevel == "S"
+
+gen cdgrsdbp14 = cohortgraduationrate if subgroup == "SD"  & subgrouptype =="All"  & numgraduates !=. & agglevel == "S"
+
+gen cdgrgtmp14 = cohortgraduationrate if subgroup == "MAL" & subgrouptype == "All" & numgraduates !=. & agglevel == "S"
+gen cdgraimp14 = cohortgraduationrate if subgroup == "MAL" & subgrouptype =="1"    & numgraduates !=. & agglevel == "S"
+gen cdgrasmp14 = cohortgraduationrate if subgroup == "MAL" & subgrouptype =="2"    & numgraduates !=. & agglevel == "S"
+gen cdgrpimp14 = cohortgraduationrate if subgroup == "MAL" & subgrouptype =="3"    & numgraduates !=. & agglevel == "S"
+gen cdgrfpmp14 = cohortgraduationrate if subgroup == "MAL" & subgrouptype =="4"    & numgraduates !=. & agglevel == "S"
+gen cdgrltmp14 = cohortgraduationrate if subgroup == "MAL" & subgrouptype =="5"    & numgraduates !=. & agglevel == "S"
+gen cdgrblmp14 = cohortgraduationrate if subgroup == "MAL" & subgrouptype =="6"    & numgraduates !=. & agglevel == "S"
+gen cdgrwhmp14 = cohortgraduationrate if subgroup == "MAL" & subgrouptype =="7"    & numgraduates !=. & agglevel == "S"
+gen cdgrmrmp14 = cohortgraduationrate if subgroup == "MAL" & subgrouptype =="9"    & numgraduates !=. & agglevel == "S"
+gen cdgrnrmp14 = cohortgraduationrate if subgroup == "MAL" & subgrouptype =="0"    & numgraduates !=. & agglevel == "S"
+
+gen cdgrgtfp14 = cohortgraduationrate if subgroup == "FEM" & subgrouptype == "All" & numgraduates !=. & agglevel == "S"
+gen cdgraifp14 = cohortgraduationrate if subgroup == "FEM" & subgrouptype =="1"    & numgraduates !=. & agglevel == "S"
+gen cdgrasfp14 = cohortgraduationrate if subgroup == "FEM" & subgrouptype =="2"    & numgraduates !=. & agglevel == "S"
+gen cdgrpifp14 = cohortgraduationrate if subgroup == "FEM" & subgrouptype =="3"    & numgraduates !=. & agglevel == "S"
+gen cdgrfpfp14 = cohortgraduationrate if subgroup == "FEM" & subgrouptype =="4"    & numgraduates !=. & agglevel == "S"
+gen cdgrltfp14 = cohortgraduationrate if subgroup == "FEM" & subgrouptype =="5"    & numgraduates !=. & agglevel == "S"
+gen cdgrblfp14 = cohortgraduationrate if subgroup == "FEM" & subgrouptype =="6"    & numgraduates !=. & agglevel == "S"
+gen cdgrwhfp14 = cohortgraduationrate if subgroup == "FEM" & subgrouptype =="7"    & numgraduates !=. & agglevel == "S"
+gen cdgrmrfp14 = cohortgraduationrate if subgroup == "FEM" & subgrouptype =="9"    & numgraduates !=. & agglevel == "S"
+gen cdgrnrfp14 = cohortgraduationrate if subgroup == "FEM" & subgrouptype =="0"    & numgraduates !=. & agglevel == "S"
+
+*collapsing the variables above by school
+collapse cdgr*, by(CDSCode)
+
+*adding labels for collapsed variables
+
+
+label var cdgrgtbc14 "cohort graduates (#) (all races, both sexes) 2013-14"
+label var cdgraibc14 "cohort graduates (#) (Am. Ind. or AK native non-Hisp, both sexes) 2013-14"
+label var cdgrasbc14 "cohort graduates (#) (Asian non-Hisp, both sexes) 2013-14"
+label var cdgrpibc14 "cohort graduates (#) (Pac. Isl. non-Hisp, both sexes) 2013-14"
+label var cdgrfpbc14 "cohort graduates (#) (Filipino non-Hisp, both sexes) 2013-14"
+label var cdgrltbc14 "cohort graduates (#) (Hispanic or Latino, both sexes) 2013-14"
+label var cdgrblbc14 "cohort graduates (#) (Af. Am. non-Hisp, both sexes) 2013-14"
+label var cdgrwhbc14 "cohort graduates (#) (White non-Hisp, both sexes) 2013-14"
+label var cdgrmrbc14 "cohort graduates (#) (2 or more races non-Hisp, both sexes) 2013-14"
+label var cdgrnrbc14 "cohort graduates (#) (race missing, both sexes) 2013-14"
+                      
+label var cdgrsdbc14 "cohort graduates (#) (socioecon. disadvantaged, both sexes) 2013-14"
+                                          
+label var cdgrgtmc14 "cohort graduates (#) (all races, male) 2013-14"
+label var cdgraimc14 "cohort graduates (#) (Am. Ind. or AK native non-Hisp, male) 2013-14"
+label var cdgrasmc14 "cohort graduates (#) (Asian non-Hisp, male) 2013-14"
+label var cdgrpimc14 "cohort graduates (#) (Pac. Isl. non-Hisp, male) 2013-14"
+label var cdgrfpmc14 "cohort graduates (#) (Filipino non-Hisp, male) 2013-14"
+label var cdgrltmc14 "cohort graduates (#) (Hispanic or Latino, male) 2013-14"
+label var cdgrblmc14 "cohort graduates (#) (Af. Am. non-Hisp, male) 2013-14"
+label var cdgrwhmc14 "cohort graduates (#) (White non-Hisp, male) 2013-14"
+label var cdgrmrmc14 "cohort graduates (#) (2 or more races non-Hisp, male) 2013-14"
+label var cdgrnrmc14 "cohort graduates (#) (race missing, male) 2013-14"
+                                          
+label var cdgrgtfc14 "cohort graduates (#) (all races, female) 2013-14"
+label var cdgraifc14 "cohort graduates (#) (Am. Ind. or AK native non-Hisp, female) 2013-14"
+label var cdgrasfc14 "cohort graduates (#) (Asian non-Hisp, female) 2013-14"
+label var cdgrpifc14 "cohort graduates (#) (Pac. Isl. non-Hisp, female) 2013-14"
+label var cdgrfpfc14 "cohort graduates (#) (Filipino non-Hisp, female) 2013-14"
+label var cdgrltfc14 "cohort graduates (#) (Hispanic or Latino, female) 2013-14"
+label var cdgrblfc14 "cohort graduates (#) (Af. Am. non-Hisp, female) 2013-14"
+label var cdgrwhfc14 "cohort graduates (#) (White non-Hisp, female) 2013-14"
+label var cdgrmrfc14 "cohort graduates (#) (2 or more races non-Hisp, female) 2013-14"
+label var cdgrnrfc14 "cohort graduates (#) (race missing, female) 2013-14"            
+
+
+
+label var cdgrgtbp14 "cohort graduation rate (%) (all races, both sexes) 2013-14"
+label var cdgraibp14 "cohort graduation rate (%) (Am. Ind. or AK native non-Hisp, both sexes) 2013-14"
+label var cdgrasbp14 "cohort graduation rate (%) (Asian non-Hisp, both sexes) 2013-14"
+label var cdgrpibp14 "cohort graduation rate (%) (Pac. Isl. non-Hisp, both sexes) 2013-14"
+label var cdgrfpbp14 "cohort graduation rate (%) (Filipino non-Hisp, both sexes) 2013-14"
+label var cdgrltbp14 "cohort graduation rate (%) (Hispanic or Latino, both sexes) 2013-14"
+label var cdgrblbp14 "cohort graduation rate (%) (Af. Am. non-Hisp, both sexes) 2013-14"
+label var cdgrwhbp14 "cohort graduation rate (%) (White non-Hisp, both sexes) 2013-14"
+label var cdgrmrbp14 "cohort graduation rate (%) (2 or more races non-Hisp, both sexes) 2013-14"
+label var cdgrnrbp14 "cohort graduation rate (%) (race missing, both sexes) 2013-14"
+                      
+label var cdgrsdbp14 "cohort graduation rate (%) (socioecon. disadvantaged, both sexes) 2013-14"
+                      
+label var cdgrgtmp14 "cohort graduation rate (%) (all races, male) 2013-14"
+label var cdgraimp14 "cohort graduation rate (%) (Am. Ind. or AK native non-Hisp, male) 2013-14"
+label var cdgrasmp14 "cohort graduation rate (%) (Asian non-Hisp, male) 2013-14"
+label var cdgrpimp14 "cohort graduation rate (%) (Pac. Isl. non-Hisp, male) 2013-14"
+label var cdgrfpmp14 "cohort graduation rate (%) (Filipino non-Hisp, male) 2013-14"
+label var cdgrltmp14 "cohort graduation rate (%) (Hispanic or Latino, male) 2013-14"
+label var cdgrblmp14 "cohort graduation rate (%) (Af. Am. non-Hisp, male) 2013-14"
+label var cdgrwhmp14 "cohort graduation rate (%) (White non-Hisp, male) 2013-14"
+label var cdgrmrmp14 "cohort graduation rate (%) (2 or more races non-Hisp, male) 2013-14"
+label var cdgrnrmp14 "cohort graduation rate (%) (race missing, male) 2013-14"
+                      
+label var cdgrgtfp14 "cohort graduation rate (%) (all races, female) 2013-14"
+label var cdgraifp14 "cohort graduation rate (%) (Am. Ind. or AK native non-Hisp, female) 2013-14"
+label var cdgrasfp14 "cohort graduation rate (%) (Asian non-Hisp, female) 2013-14"
+label var cdgrpifp14 "cohort graduation rate (%) (Pac. Isl. non-Hisp, female) 2013-14"
+label var cdgrfpfp14 "cohort graduation rate (%) (Filipino non-Hisp, female) 2013-14"
+label var cdgrltfp14 "cohort graduation rate (%) (Hispanic or Latino, female) 2013-14"
+label var cdgrblfp14 "cohort graduation rate (%) (Af. Am. non-Hisp, female) 2013-14"
+label var cdgrwhfp14 "cohort graduation rate (%) (White non-Hisp, female) 2013-14"
+label var cdgrmrfp14 "cohort graduation rate (%) (2 or more races non-Hisp, female) 2013-14"
+label var cdgrnrfp14 "cohort graduation rate (%) (race missing, female) 2013-14"
+
+
+keep CDSCode cdgrgtbc14-cdgrnrfp14
+
+*save "C:\Users\lsalazar\Syncplicity Folders\lsalazar (IT Admin)\LAERI\cff_laeri_collegegoing\dta\cde_hs_data_reformat\filescohort_reformat", replace
+save "I:\LAERI\cff_laeri_collegegoing\dta\cde_hs_data_reformat\filescohort_reformat", replace
+
+clear
+set more off
+
+//  #5
+//  Importing the CDE filessfsfc11 data from http://www.cde.ca.gov/ds/sd/sd/filessfsfc11.asp
+//  High school graduates enrolled in PSE institutions nationally by ethnicity, ELL, disadvantaged
+insheet using "filessfsfc11.csv"
+
+*fixing the name of the "CDSCode" variable that will be basis for later merge
+
+
+drop if v1=="CDS_code"
+
+rename v1 cds_code
+rename v2 name
+rename v3 subgroup
+rename v4 subgrouptype
+rename v5 grads
+rename v6 gradsenrlps
+rename v7 percentgradsps
+*rename cds_code CDSCode
+
+*recoding missing data in variables of interest from "*" to "."
+foreach var of varlist name subgroup subgrouptype grads gradsenrlps percentgradsps  {
+  replace `var' = "." if `var' == "*"
+}
+destring *, replace
+
+*Create CDS Code without leading '
+gen districtcode = substr(cds_code,4,5)
+gen countycode   = substr(cds_code,2,2)
+gen schoolcode   = substr(cds_code,9,7)
+
+gen CDSCode = countycode + districtcode + schoolcode
+
+*percentage of graduates enrolled in PSE institution in 2008-09
+gen       cdpsp09 = 100*(gradsenrlps/grads)
+label var cdpsp09 "percentage of graduates enrolled in PSE institution in 2008-09"
+
+
+
+gen cdpsgtbp09  = cdpsp09 if subgroup == "ALL" & subgrouptype == "ALL"
+gen cdpssdbp09  = cdpsp09 if subgroup == "SD" & subgrouptype == "ALL"
+
+gen cdpsaibp09  = cdpsp09 if subgroup == "ALL" & subgrouptype == "1"
+gen cdpsasbp09  = cdpsp09 if subgroup == "ALL" & subgrouptype == "2"
+gen cdpspibp09  = cdpsp09 if subgroup == "ALL" & subgrouptype == "3"
+gen cdpsltbp09  = cdpsp09 if subgroup == "ALL" & subgrouptype == "5"
+gen cdpsblbp09  = cdpsp09 if subgroup == "ALL" & subgrouptype == "6"
+gen cdpswhbp09  = cdpsp09 if subgroup == "ALL" & subgrouptype == "7"
+gen cdpsmrbp09  = cdpsp09 if subgroup == "ALL" & subgrouptype == "9"
+gen cdpsnrbp09  = cdpsp09 if subgroup == "ALL" & subgrouptype == "0"
+
+collapse (firstnm) name cdps*, by(CDSCode)
+
+
+label var cdpsgtbp09  "% of grads enrolled in PSE inst. (all races, both sexes) 2008-09"
+label var cdpssdbp09  "% of grads enrolled in PSE inst. (socioec. disadvantaged, both sexes) 2008-09"
+
+label var cdpsaibp09  "% of grads enrolled in PSE inst. (Am. Ind./AK nat. non-Hisp, both sexes) 2008-09"
+label var cdpsasbp09  "% of grads enrolled in PSE inst. (Asian non-Hisp, both sexes) 2008-09"
+label var cdpspibp09  "% of grads enrolled in PSE inst. (Pac. Isl. non-Hisp, both sexes) 2008-09"
+label var cdpsltbp09  "% of grads enrolled in PSE inst. (Hispanic or Latino, both sexes) 2008-09"
+label var cdpsblbp09  "% of grads enrolled in PSE inst. (Af. Am. non-Hisp, both sexes) 2008-09"
+label var cdpswhbp09  "% of grads enrolled in PSE inst. (White non-Hisp, both sexes) 2008-09"
+label var cdpsmrbp09  "% of grads enrolled in PSE inst. (2 or more races non-Hisp, both sexes) 2008-09"
+label var cdpsnrbp09  "% of grads enrolled in PSE inst. (race missing, both sexes) 2008-09"
+
+*Appending "filessfsfc11" prefix to school name for future reference
+rename name filessfsfc11_school
+
+drop cdpsp09
+
+*save "C:\Users\lsalazar\Syncplicity Folders\lsalazar (IT Admin)\LAERI\cff_laeri_collegegoing\dta\cde_hs_data_reformat\filessfsfc11_reformat", replace
+save "I:\LAERI\cff_laeri_collegegoing\dta\cde_hs_data_reformat\filessfsfc11_reformat", replace
+
+clear
+set more off
+
+//  #6
+//  Importing the CDE "filesgrads" data from http://www.cde.ca.gov/ds/sd/sd/filesgrads.asp
+//  Counts of graduating seniors (and graduates meeting UC/CSU reqs) by race and sex
+insheet using "filesgrads.csv"
+
+*Renaming CDSCode and changing it from string to numeric for later merge
+
+gen districtcode = substr(cds_code,4,5)
+gen countycode   = substr(cds_code,2,2)
+gen schoolcode   = substr(cds_code,9,7)
+
+*keep if countycode == "19"
+
+*changing CDSCode from string to numeric for later merge
+gen CDSCode = countycode + districtcode + schoolcode
+
+drop cds_code
+
+*recoding and labeling categorical variables
+label var ethnic   "race/ethnicity"
+label var gender   "gender"
+label var grads    "number of twelfth-grade graduates (excluding GEDs)"
+label var uc_grads "number of twelfth grade grads who completed UC/CSU reqs with C or better"
+
+rename uc_grads UCgrads
+
+
+label values ethnic lethnic
+
+replace gender="1" if gender=="M"
+replace gender="0" if gender=="F"
+destring gender, replace
+label values gender lgender
+
+
+*generating counts of total graduates for each school
+bysort CDSCode: egen cdgrgtbc14  = sum(grads)
+bysort CDSCode: egen cdgraibc14  = sum(grads) if ethnic==1
+bysort CDSCode: egen cdgrasbc14  = sum(grads) if ethnic==2
+bysort CDSCode: egen cdgrpibc14  = sum(grads) if ethnic==3
+bysort CDSCode: egen cdgrfpbc14  = sum(grads) if ethnic==4
+bysort CDSCode: egen cdgrltbc14  = sum(grads) if ethnic==5
+bysort CDSCode: egen cdgrblbc14  = sum(grads) if ethnic==6
+bysort CDSCode: egen cdgrwhbc14  = sum(grads) if ethnic==7
+bysort CDSCode: egen cdgrmrbc14  = sum(grads) if ethnic==9
+bysort CDSCode: egen cdgrnrbc14  = sum(grads) if ethnic==0
+
+bysort CDSCode: egen cdgrgtmc14  = sum(grads) if gender==1
+bysort CDSCode: egen cdgraimc14  = sum(grads) if ethnic==1 & gender==1
+bysort CDSCode: egen cdgrasmc14  = sum(grads) if ethnic==2 & gender==1
+bysort CDSCode: egen cdgrpimc14  = sum(grads) if ethnic==3 & gender==1
+bysort CDSCode: egen cdgrfpmc14  = sum(grads) if ethnic==4 & gender==1
+bysort CDSCode: egen cdgrltmc14  = sum(grads) if ethnic==5 & gender==1
+bysort CDSCode: egen cdgrblmc14  = sum(grads) if ethnic==6 & gender==1
+bysort CDSCode: egen cdgrwhmc14  = sum(grads) if ethnic==7 & gender==1
+bysort CDSCode: egen cdgrmrmc14  = sum(grads) if ethnic==9 & gender==1
+bysort CDSCode: egen cdgrnrmc14  = sum(grads) if ethnic==0 & gender==1
+
+bysort CDSCode: egen cdgrgtfc14  = sum(grads) if gender==0
+bysort CDSCode: egen cdgraifc14  = sum(grads) if ethnic==1 & gender==0
+bysort CDSCode: egen cdgrasfc14  = sum(grads) if ethnic==2 & gender==0
+bysort CDSCode: egen cdgrpifc14  = sum(grads) if ethnic==3 & gender==0
+bysort CDSCode: egen cdgrfpfc14  = sum(grads) if ethnic==4 & gender==0
+bysort CDSCode: egen cdgrltfc14  = sum(grads) if ethnic==5 & gender==0
+bysort CDSCode: egen cdgrblfc14  = sum(grads) if ethnic==6 & gender==0
+bysort CDSCode: egen cdgrwhfc14  = sum(grads) if ethnic==7 & gender==0
+bysort CDSCode: egen cdgrmrfc14  = sum(grads) if ethnic==9 & gender==0
+bysort CDSCode: egen cdgrnrfc14  = sum(grads) if ethnic==0 & gender==0
+
+
+
+label var            cdgrgtbc14  "# of grads (all races, both sexes) 2013-14"
+label var            cdgraibc14  "# of grads (Am. Ind or AK native non-Hisp, both sexes) 2013-14"
+label var            cdgrasbc14  "# of grads (Asian non-Hisp, both sexes) 2013-14"
+label var            cdgrpibc14  "# of grads (Pac. Isl. non-Hisp, both sexes) 2013-14"
+label var            cdgrfpbc14  "# of grads (Filipino non-Hisp, both sexes) 2013-14"
+label var            cdgrltbc14  "# of grads (Hispanic or Latino, both sexes) 2013-14"
+label var            cdgrblbc14  "# of grads (Af. Am. non-Hisp, both sexes) 2013-14"
+label var            cdgrwhbc14  "# of grads (White non-Hisp, both sexes) 2013-14"
+label var            cdgrmrbc14  "# of grads (2 or more races non-Hisp, both sexes) 2013-14"
+label var            cdgrnrbc14  "# of grads (race missing, both sexes) 2013-14"
+
+label var            cdgrgtmc14  "# of grads (all races, male) 2013-14"
+label var            cdgraimc14  "# of grads (Am. Ind or AK native non-Hisp, male) 2013-14"
+label var            cdgrasmc14  "# of grads (Asian non-Hisp, male) 2013-14"
+label var            cdgrpimc14  "# of grads (Pac. Isl. non-Hisp, male) 2013-14"
+label var            cdgrfpmc14  "# of grads (Filipino non-Hisp, male) 2013-14"
+label var            cdgrltmc14  "# of grads (Hispanic or Latino, male) 2013-14"
+label var            cdgrblmc14  "# of grads (Af. Am. non-Hisp, male) 2013-14"
+label var            cdgrwhmc14  "# of grads (White non-Hisp, male) 2013-14"
+label var            cdgrmrmc14  "# of grads (2 or more races non-Hisp, male) 2013-14"
+label var            cdgrnrmc14  "# of grads (race missing, male) 2013-14"
+                           
+label var            cdgrgtfc14  "# of grads (all races, female) 2013-14"
+label var            cdgraifc14  "# of grads (Am. Ind or AK native non-Hisp, female) 2013-14"
+label var            cdgrasfc14  "# of grads (Asian non-Hisp, female) 2013-14"
+label var            cdgrpifc14  "# of grads (Pac. Isl. non-Hisp, female) 2013-14"
+label var            cdgrfpfc14  "# of grads (Filipino non-Hisp, female) 2013-14"
+label var            cdgrltfc14  "# of grads (Hispanic or Latino, female) 2013-14"
+label var            cdgrblfc14  "# of grads (Af. Am. non-Hisp, female) 2013-14"
+label var            cdgrwhfc14  "# of grads (White non-Hisp, female) 2013-14"
+label var            cdgrmrfc14  "# of grads (2 or more races non-Hisp, female) 2013-14"
+label var            cdgrnrfc14  "# of grads (race missing, female) 2013-14"
+
+
+
+
+*generating counts of total graduates meeting UC/CSU reqs for each school
+bysort CDSCode: egen cducgtbc14  = sum(UCgrads)
+bysort CDSCode: egen cducaibc14  = sum(UCgrads) if ethnic==1
+bysort CDSCode: egen cducasbc14  = sum(UCgrads) if ethnic==2
+bysort CDSCode: egen cducpibc14  = sum(UCgrads) if ethnic==3
+bysort CDSCode: egen cducfpbc14  = sum(UCgrads) if ethnic==4
+bysort CDSCode: egen cducltbc14  = sum(UCgrads) if ethnic==5
+bysort CDSCode: egen cducblbc14  = sum(UCgrads) if ethnic==6
+bysort CDSCode: egen cducwhbc14  = sum(UCgrads) if ethnic==7
+bysort CDSCode: egen cducmrbc14  = sum(UCgrads) if ethnic==9
+bysort CDSCode: egen cducnrbc14  = sum(UCgrads) if ethnic==0
+
+bysort CDSCode: egen cducgtmc14  = sum(UCgrads) if gender==1
+bysort CDSCode: egen cducaimc14  = sum(UCgrads) if ethnic==1 & gender==1
+bysort CDSCode: egen cducasmc14  = sum(UCgrads) if ethnic==2 & gender==1
+bysort CDSCode: egen cducpimc14  = sum(UCgrads) if ethnic==3 & gender==1
+bysort CDSCode: egen cducfpmc14  = sum(UCgrads) if ethnic==4 & gender==1
+bysort CDSCode: egen cducltmc14  = sum(UCgrads) if ethnic==5 & gender==1
+bysort CDSCode: egen cducblmc14  = sum(UCgrads) if ethnic==6 & gender==1
+bysort CDSCode: egen cducwhmc14  = sum(UCgrads) if ethnic==7 & gender==1
+bysort CDSCode: egen cducmrmc14  = sum(UCgrads) if ethnic==9 & gender==1
+bysort CDSCode: egen cducnrmc14  = sum(UCgrads) if ethnic==0 & gender==1
+                           
+bysort CDSCode: egen cducgtfc14  = sum(UCgrads) if gender==0
+bysort CDSCode: egen cducaifc14  = sum(UCgrads) if ethnic==1 & gender==0
+bysort CDSCode: egen cducasfc14  = sum(UCgrads) if ethnic==2 & gender==0
+bysort CDSCode: egen cducpifc14  = sum(UCgrads) if ethnic==3 & gender==0
+bysort CDSCode: egen cducfpfc14  = sum(UCgrads) if ethnic==4 & gender==0
+bysort CDSCode: egen cducltfc14  = sum(UCgrads) if ethnic==5 & gender==0
+bysort CDSCode: egen cducblfc14  = sum(UCgrads) if ethnic==6 & gender==0
+bysort CDSCode: egen cducwhfc14  = sum(UCgrads) if ethnic==7 & gender==0
+bysort CDSCode: egen cducmrfc14  = sum(UCgrads) if ethnic==9 & gender==0
+bysort CDSCode: egen cducnrfc14  = sum(UCgrads) if ethnic==0 & gender==0
+                     
+
+
+                   
+
+
+
+gen cducgtbp14    = 100*(cducgtbc14/cdgrgtbc14) if cdgrgtbc14 >10
+gen cducaibp14    = 100*(cducaibc14/cdgraibc14) if cdgraibc14 >10
+gen cducasbp14    = 100*(cducasbc14/cdgrasbc14) if cdgrasbc14 >10
+gen cducpibp14    = 100*(cducpibc14/cdgrpibc14) if cdgrpibc14 >10
+gen cducfpbp14    = 100*(cducfpbc14/cdgrfpbc14) if cdgrfpbc14 >10
+gen cducltbp14    = 100*(cducltbc14/cdgrltbc14) if cdgrltbc14 >10
+gen cducblbp14    = 100*(cducblbc14/cdgrblbc14) if cdgrblbc14 >10
+gen cducwhbp14    = 100*(cducwhbc14/cdgrwhbc14) if cdgrwhbc14 >10
+gen cducmrbp14    = 100*(cducmrbc14/cdgrmrbc14) if cdgrmrbc14 >10
+gen cducnrbp14    = 100*(cducnrbc14/cdgrnrbc14) if cdgrnrbc14 >10
+                                                   
+gen cducgtmp14    = 100*(cducgtmc14/cdgrgtmc14) if cdgrgtmc14 >10
+gen cducaimp14    = 100*(cducaimc14/cdgraimc14) if cdgraimc14 >10
+gen cducasmp14    = 100*(cducasmc14/cdgrasmc14) if cdgrasmc14 >10
+gen cducpimp14    = 100*(cducpimc14/cdgrpimc14) if cdgrpimc14 >10
+gen cducfpmp14    = 100*(cducfpmc14/cdgrfpmc14) if cdgrfpmc14 >10
+gen cducltmp14    = 100*(cducltmc14/cdgrltmc14) if cdgrltmc14 >10
+gen cducblmp14    = 100*(cducblmc14/cdgrblmc14) if cdgrblmc14 >10
+gen cducwhmp14    = 100*(cducwhmc14/cdgrwhmc14) if cdgrwhmc14 >10
+gen cducmrmp14    = 100*(cducmrmc14/cdgrmrmc14) if cdgrmrmc14 >10
+gen cducnrmp14    = 100*(cducnrmc14/cdgrnrmc14) if cdgrnrmc14 >10
+                                                         
+gen cducgtfp14    = 100*(cducgtfc14/cdgrgtfc14) if cdgrgtfc14 >10
+gen cducaifp14    = 100*(cducaifc14/cdgraifc14) if cdgraifc14 >10
+gen cducasfp14    = 100*(cducasfc14/cdgrasfc14) if cdgrasfc14 >10
+gen cducpifp14    = 100*(cducpifc14/cdgrpifc14) if cdgrpifc14 >10
+gen cducfpfp14    = 100*(cducfpfc14/cdgrfpfc14) if cdgrfpfc14 >10
+gen cducltfp14    = 100*(cducltfc14/cdgrltfc14) if cdgrltfc14 >10
+gen cducblfp14    = 100*(cducblfc14/cdgrblfc14) if cdgrblfc14 >10
+gen cducwhfp14    = 100*(cducwhfc14/cdgrwhfc14) if cdgrwhfc14 >10
+gen cducmrfp14    = 100*(cducmrfc14/cdgrmrfc14) if cdgrmrfc14 >10
+gen cducnrfp14    = 100*(cducnrfc14/cdgrnrfc14) if cdgrnrfc14 >10
+
+
+
+*collapsing dataset to get one observation per school with counts and percentages
+*of grads meeting UC/CSU requirements
+collapse cdgr* cduc*, by(CDSCode)
+
+
+label var           cducgtbc14  "# of grads meeting UC/CSU reqs (all races, both sexes) 2013-14"                                     
+label var           cducaibc14  "# of grads meeting UC/CSU reqs (Am. Ind or AK nat. non-Hisp, both sexes) 2013-14"
+label var           cducasbc14  "# of grads meeting UC/CSU reqs (Asian non-Hisp, both sexes) 2013-14"               
+label var           cducpibc14  "# of grads meeting UC/CSU reqs (Pac. Isl. non-Hisp, both sexes) 2013-14"           
+label var           cducfpbc14  "# of grads meeting UC/CSU reqs (Filipino non-Hisp, both sexes) 2013-14"            
+label var           cducltbc14  "# of grads meeting UC/CSU reqs (Hispanic or Latino, both sexes) 2013-14"           
+label var           cducblbc14  "# of grads meeting UC/CSU reqs (Af. Am. non-Hisp, both sexes) 2013-14"             
+label var           cducwhbc14  "# of grads meeting UC/CSU reqs (White non-Hisp, both sexes) 2013-14"               
+label var           cducmrbc14  "# of grads meeting UC/CSU reqs (2 or more races non-Hisp, both sexes) 2013-14"
+label var           cducnrbc14  "# of grads meeting UC/CSU reqs (race missing, both sexes) 2013-14"
+
+label var           cducgtmc14  "# of grads meeting UC/CSU reqs (all races, male) 2013-14"                                     
+label var           cducaimc14  "# of grads meeting UC/CSU reqs (Am. Ind or AK nat. non-Hisp, male) 2013-14"
+label var           cducasmc14  "# of grads meeting UC/CSU reqs (Asian non-Hisp, male) 2013-14"               
+label var           cducpimc14  "# of grads meeting UC/CSU reqs (Pac. Isl. non-Hisp, male) 2013-14"           
+label var           cducfpmc14  "# of grads meeting UC/CSU reqs (Filipino non-Hisp, male) 2013-14"            
+label var           cducltmc14  "# of grads meeting UC/CSU reqs (Hispanic or Latino, male) 2013-14"           
+label var           cducblmc14  "# of grads meeting UC/CSU reqs (Af. Am. non-Hisp, male) 2013-14"             
+label var           cducwhmc14  "# of grads meeting UC/CSU reqs (White non-Hisp, male) 2013-14"               
+label var           cducmrmc14  "# of grads meeting UC/CSU reqs (2 or more races non-Hisp, male) 2013-14"
+label var           cducnrmc14  "# of grads meeting UC/CSU reqs (race missing, male) 2013-14"
+                           
+label var           cducgtfc14  "# of grads meeting UC/CSU reqs (all races, female) 2013-14"                                     
+label var           cducaifc14  "# of grads meeting UC/CSU reqs (Am. Ind or AK nat. non-Hisp, female) 2013-14"
+label var           cducasfc14  "# of grads meeting UC/CSU reqs (Asian non-Hisp, female) 2013-14"               
+label var           cducpifc14  "# of grads meeting UC/CSU reqs (Pac. Isl. non-Hisp, female) 2013-14"           
+label var           cducfpfc14  "# of grads meeting UC/CSU reqs (Filipino non-Hisp, female) 2013-14"            
+label var           cducltfc14  "# of grads meeting UC/CSU reqs (Hispanic or Latino, female) 2013-14"           
+label var           cducblfc14  "# of grads meeting UC/CSU reqs (Af. Am. non-Hisp, female) 2013-14"             
+label var           cducwhfc14  "# of grads meeting UC/CSU reqs (White non-Hisp, female) 2013-14"               
+label var           cducmrfc14  "# of grads meeting UC/CSU reqs (2 or more races non-Hisp, female) 2013-14"
+label var           cducnrfc14  "# of grads meeting UC/CSU reqs (race missing, female) 2013-14"     
+                                  
+
+
+
+label var           cducgtbp14  "% of grads meeting UC/CSU reqs (all races, both sexes) 2013-14"                 
+label var           cducaibp14  "% of grads meeting UC/CSU reqs (Am. Ind or AK nat. non-Hisp, both sexes) 2013-14"
+label var           cducasbp14  "% of grads meeting UC/CSU reqs (Asian non-Hisp, both sexes) 2013-14"               
+label var           cducpibp14  "% of grads meeting UC/CSU reqs (Pac. Isl. non-Hisp, both sexes) 2013-14"           
+label var           cducfpbp14  "% of grads meeting UC/CSU reqs (Filipino non-Hisp, both sexes) 2013-14"            
+label var           cducltbp14  "% of grads meeting UC/CSU reqs (Hispanic or Latino, both sexes) 2013-14"           
+label var           cducblbp14  "% of grads meeting UC/CSU reqs (Af. Am. non-Hisp, both sexes) 2013-14"             
+label var           cducwhbp14  "% of grads meeting UC/CSU reqs (White non-Hisp, both sexes) 2013-14"               
+label var           cducmrbp14  "% of grads meeting UC/CSU reqs (2 or more races non-Hisp, both sexes) 2013-14"
+label var           cducnrbp14  "% of grads meeting UC/CSU reqs (race missing, both sexes) 2013-14"
+
+label var           cducgtmp14  "% of grads meeting UC/CSU reqs (all races, male) 2013-14"                 
+label var           cducaimp14  "% of grads meeting UC/CSU reqs (Am. Ind or AK nat. non-Hisp, male) 2013-14"
+label var           cducasmp14  "% of grads meeting UC/CSU reqs (Asian non-Hisp, male) 2013-14"               
+label var           cducpimp14  "% of grads meeting UC/CSU reqs (Pac. Isl. non-Hisp, male) 2013-14"           
+label var           cducfpmp14  "% of grads meeting UC/CSU reqs (Filipino non-Hisp, male) 2013-14"            
+label var           cducltmp14  "% of grads meeting UC/CSU reqs (Hispanic or Latino, male) 2013-14"           
+label var           cducblmp14  "% of grads meeting UC/CSU reqs (Af. Am. non-Hisp, male) 2013-14"             
+label var           cducwhmp14  "% of grads meeting UC/CSU reqs (White non-Hisp, male) 2013-14"               
+label var           cducmrmp14  "% of grads meeting UC/CSU reqs (2 or more races non-Hisp, male) 2013-14"
+label var           cducnrmp14  "% of grads meeting UC/CSU reqs (race missing, male) 2013-14"
+                           
+label var           cducgtfp14  "% of grads meeting UC/CSU reqs (all races, female) 2013-14"                 
+label var           cducaifp14  "% of grads meeting UC/CSU reqs (Am. Ind or AK nat. non-Hisp, female) 2013-14"
+label var           cducasfp14  "% of grads meeting UC/CSU reqs (Asian non-Hisp, female) 2013-14"               
+label var           cducpifp14  "% of grads meeting UC/CSU reqs (Pac. Isl. non-Hisp, female) 2013-14"           
+label var           cducfpfp14  "% of grads meeting UC/CSU reqs (Filipino non-Hisp, female) 2013-14"            
+label var           cducltfp14  "% of grads meeting UC/CSU reqs (Hispanic or Latino, female) 2013-14"           
+label var           cducblfp14  "% of grads meeting UC/CSU reqs (Af. Am. non-Hisp, female) 2013-14"             
+label var           cducwhfp14  "% of grads meeting UC/CSU reqs (White non-Hisp, female) 2013-14"               
+label var           cducmrfp14  "% of grads meeting UC/CSU reqs (2 or more races non-Hisp, female) 2013-14"
+label var           cducnrfp14  "% of grads meeting UC/CSU reqs (race missing, female) 2013-14"     
+                                  
+
+*keeping just the percentages of grads meeting UC/CSU reqs (and dropping the headcounts).
+keep CDSCode cducgtbp14-cducnrfp14
+
+*save "C:\Users\lsalazar\Syncplicity Folders\lsalazar (IT Admin)\LAERI\cff_laeri_collegegoing\dta\cde_hs_data_reformat\filesgrads_reformat", replace
+save "I:\LAERI\cff_laeri_collegegoing\dta\cde_hs_data_reformat\filesgrads_reformat", replace
+
+clear
+set more off
+
+//  #7
+//  Importing the EAP "CA2013_ALL_CSV_v1" data from http://eap2013.ets.org/ResearchFiles/CA2013_ALL_CSV_v1.zip
+//  EAP test results stratified by sex, race, ELL, migrant, socioeconomically disadvantaged
+
+*this is the list of schools and school districts
+insheet using "CA2013Entities_CSV.txt", comma clear
+
+*need to concatenate county/district/school codes into CDSCode that matches CDE data
+tostring countycode, format(%02.0f) replace
+tostring districtcode, format(%05.0f) replace
+tostring schoolcode, format(%07.0f) replace
+
+gen CDSCode = countycode + districtcode + schoolcode
+*destring *, replace
+
+*adding "EAP_" prefix to all of the entities variables so that they can be cross-checked against matched CDE values later
+foreach var of varlist countycode districtcode schoolcode charternumber year typeid countyname districtname schoolname zipcode {
+  rename `var' EAP_`var'
+}
+
+*save "C:\Users\lsalazar\Syncplicity Folders\lsalazar (IT Admin)\LAERI\cff_laeri_collegegoing\dta\cde_hs_data_reformat\CA2013Entities_reformat", replace
+save "I:\LAERI\cff_laeri_collegegoing\dta\cde_hs_data_reformat\CA2013Entities_reformat", replace
+
+
+
+clear
+set more off
+*these are the actual EAP results by district and school
+insheet using "CA2013_ALL_CSV_v1.txt", comma clear
+
+*Need to concatenate county/district/school codes into CDSCode that matches CDE data
+tostring countycode, format(%02.0f) replace
+tostring districtcode, format(%05.0f) replace
+tostring schoolcode, format(%07.0f) replace
+gen CDSCode = "'" + countycode + districtcode + schoolcode 
+
+/// Need to add the ' in order to keep it from dropping the leading "0" when destringing in a few lines
+
+
+*recoding missing data in variables of interest from "*" to "." and de-stringing all numeric vars
+foreach var of varlist participationpercentage eappercentreadyforcollege eappercentreadyforcollegeconditi eappercentnotreadyforcollegeyet eapstudentsreadyforcollege eapstudentsreadyforcollegecondit eapstudentsnotreadyforcollegeyet {
+  replace `var' = "." if `var' == "*"
+}
+destring *, replace
+
+*Need to recreade the CDS Code now that destringing is complete
+
+gen districtcode2 = substr(CDSCode,4,5)
+gen countycode2   = substr(CDSCode,2,2)
+gen schoolcode2   = substr(CDSCode,9,7)
+
+drop CDSCode
+gen CDSCode = countycode2 + districtcode2 + schoolcode2
+
+//NOTE: Percentages stratified by sex and race are only given at district level and higher.
+//      The dataset has _counts_ of students who took the EAP and _counts_ of students who 
+//      tested "ready for college"/"ready for college conditional"/"not yet ready for college"
+//      by sex and race at the school level, but these samples at the school level seem to be
+//      too small to impute reliable school-level percentages.
+
+
+*EAP students tested counts
+gen eaetgtbc13        = eapstudentstested if testid == 34 & subgroup ==1
+gen eamtgtbc13        = eapstudentstested if testid == 37 & subgroup ==1
+
+gen eaetedbc13        = eapstudentstested if testid == 34 & subgroup ==31
+gen eamtedbc13        = eapstudentstested if testid == 37 & subgroup ==31
+                              
+gen eaetaibc13        = eapstudentstested if testid == 34 & subgroup ==75
+gen eamtaibc13        = eapstudentstested if testid == 37 & subgroup ==75
+
+gen eaetasbc13        = eapstudentstested if testid == 34 & subgroup ==76
+gen eamtasbc13        = eapstudentstested if testid == 37 & subgroup ==76
+
+gen eaetpibc13        = eapstudentstested if testid == 34 & subgroup ==79
+gen eamtpibc13        = eapstudentstested if testid == 37 & subgroup ==79
+
+gen eaetfpbc13        = eapstudentstested if testid == 34 & subgroup ==77
+gen eamtfpbc13        = eapstudentstested if testid == 37 & subgroup ==77
+
+gen eaetltbc13        = eapstudentstested if testid == 34 & subgroup ==78
+gen eamtltbc13        = eapstudentstested if testid == 37 & subgroup ==78
+                                                      
+gen eaetblbc13        = eapstudentstested if testid == 34 & subgroup ==74
+gen eamtblbc13        = eapstudentstested if testid == 37 & subgroup ==74
+                                 
+gen eaetwhbc13        = eapstudentstested if testid == 34 & subgroup ==80
+gen eamtwhbc13        = eapstudentstested if testid == 37 & subgroup ==80
+                                
+gen eaetmrbc13        = eapstudentstested if testid == 34 & subgroup ==144
+gen eamtmrbc13        = eapstudentstested if testid == 37 & subgroup ==144
+
+gen eaetgtmc13        = eapstudentstested if testid == 34 & subgroup ==3
+gen eamtgtmc13        = eapstudentstested if testid == 37 & subgroup ==3
+                 
+gen eaetgtfc13        = eapstudentstested if testid == 34 & subgroup ==4
+gen eamtgtfc13        = eapstudentstested if testid == 37 & subgroup ==4
+    
+
+*EAP "Ready for College" counts
+gen eaergtbc13        = eapstudentsreadyforcollege if testid == 34 & subgroup ==1
+gen eamrgtbc13        = eapstudentsreadyforcollege if testid == 37 & subgroup ==1
+
+gen eaeredbc13        = eapstudentsreadyforcollege if testid == 34 & subgroup ==31
+gen eamredbc13        = eapstudentsreadyforcollege if testid == 37 & subgroup ==31
+  
+gen eaeraibc13        = eapstudentsreadyforcollege if testid == 34 & subgroup ==75
+gen eamraibc13        = eapstudentsreadyforcollege if testid == 37 & subgroup ==75
+
+gen eaerasbc13        = eapstudentsreadyforcollege if testid == 34 & subgroup ==76
+gen eamrasbc13        = eapstudentsreadyforcollege if testid == 37 & subgroup ==76
+        
+gen eaerpibc13        = eapstudentsreadyforcollege if testid == 34 & subgroup ==79
+gen eamrpibc13        = eapstudentsreadyforcollege if testid == 37 & subgroup ==79
+
+gen eaerfpbc13        = eapstudentsreadyforcollege if testid == 34 & subgroup ==77
+gen eamrfpbc13        = eapstudentsreadyforcollege if testid == 37 & subgroup ==77
+        
+gen eaerltbc13        = eapstudentsreadyforcollege if testid == 34 & subgroup ==78
+gen eamrltbc13        = eapstudentsreadyforcollege if testid == 37 & subgroup ==78
+            
+gen eaerblbc13        = eapstudentsreadyforcollege if testid == 34 & subgroup ==74
+gen eamrblbc13        = eapstudentsreadyforcollege if testid == 37 & subgroup ==74
+              
+gen eaerwhbc13        = eapstudentsreadyforcollege if testid == 34 & subgroup ==80
+gen eamrwhbc13        = eapstudentsreadyforcollege if testid == 37 & subgroup ==80
+              
+gen eaermrbc13        = eapstudentsreadyforcollege if testid == 34 & subgroup ==144
+gen eamrmrbc13        = eapstudentsreadyforcollege if testid == 37 & subgroup ==144
+    
+gen eaergtmc13        = eapstudentsreadyforcollege if testid == 34 & subgroup ==3
+gen eamrgtmc13        = eapstudentsreadyforcollege if testid == 37 & subgroup ==3
+    
+gen eaergtfc13        = eapstudentsreadyforcollege if testid == 34 & subgroup ==4
+gen eamrgtfc13        = eapstudentsreadyforcollege if testid == 37 & subgroup ==4
+  
+
+*EAP "Ready for College Conditional" counts
+gen eaercgtbc13       = eapstudentsreadyforcollegecondit if testid == 34 & subgroup ==1
+gen eamrcgtbc13       = eapstudentsreadyforcollegecondit if testid == 37 & subgroup ==1
+
+gen eaercedbc13       = eapstudentsreadyforcollegecondit if testid == 34 & subgroup ==31
+gen eamrcedbc13       = eapstudentsreadyforcollegecondit if testid == 37 & subgroup ==31
+ 
+gen eaercaibc13       = eapstudentsreadyforcollegecondit if testid == 34 & subgroup ==75
+gen eamrcaibc13       = eapstudentsreadyforcollegecondit if testid == 37 & subgroup ==75
+
+gen eaercasbc13       = eapstudentsreadyforcollegecondit if testid == 34 & subgroup ==76
+gen eamrcasbc13       = eapstudentsreadyforcollegecondit if testid == 37 & subgroup ==76
+         
+gen eaercpibc13       = eapstudentsreadyforcollegecondit if testid == 34 & subgroup ==79
+gen eamrcpibc13       = eapstudentsreadyforcollegecondit if testid == 37 & subgroup ==79
+
+gen eaercfpbc13       = eapstudentsreadyforcollegecondit if testid == 34 & subgroup ==77
+gen eamrcfpbc13       = eapstudentsreadyforcollegecondit if testid == 37 & subgroup ==77
+         
+gen eaercltbc13       = eapstudentsreadyforcollegecondit if testid == 34 & subgroup ==78
+gen eamrcltbc13       = eapstudentsreadyforcollegecondit if testid == 37 & subgroup ==78
+            
+gen eaercblbc13       = eapstudentsreadyforcollegecondit if testid == 34 & subgroup ==74
+gen eamrcblbc13       = eapstudentsreadyforcollegecondit if testid == 37 & subgroup ==74
+                 
+gen eaercwhbc13       = eapstudentsreadyforcollegecondit if testid == 34 & subgroup ==80
+gen eamrcwhbc13       = eapstudentsreadyforcollegecondit if testid == 37 & subgroup ==80
+          
+gen eaercmrbc13       = eapstudentsreadyforcollegecondit if testid == 34 & subgroup ==144
+gen eamrcmrbc13       = eapstudentsreadyforcollegecondit if testid == 37 & subgroup ==144
+    
+gen eaercgtmc13       = eapstudentsreadyforcollegecondit if testid == 34 & subgroup ==3
+gen eamrcgtmc13       = eapstudentsreadyforcollegecondit if testid == 37 & subgroup ==3
+    
+gen eaercgtfc13       = eapstudentsreadyforcollegecondit if testid == 34 & subgroup ==4
+gen eamrcgtfc13       = eapstudentsreadyforcollegecondit if testid == 37 & subgroup ==4
+
+
+
+*collapsing the variables above by school
+collapse eae* eam*, by(CDSCode)   
+
+*EAP English "Ready for College" percentages
+gen eaergtbp13        = 100*(eaergtbc13/eaetgtbc13) if eaetgtbc13 >10
+gen eaeredbp13        = 100*(eaeredbc13/eaetedbc13) if eaetedbc13 >10
+gen eaeraibp13        = 100*(eaeraibc13/eaetaibc13) if eaetaibc13 >10
+gen eaerasbp13        = 100*(eaerasbc13/eaetasbc13) if eaetasbc13 >10
+gen eaerpibp13        = 100*(eaerpibc13/eaetpibc13) if eaetpibc13 >10
+gen eaerfpbp13        = 100*(eaerfpbc13/eaetfpbc13) if eaetfpbc13 >10
+gen eaerltbp13        = 100*(eaerltbc13/eaetltbc13) if eaetltbc13 >10
+gen eaerblbp13        = 100*(eaerblbc13/eaetblbc13) if eaetblbc13 >10
+gen eaerwhbp13        = 100*(eaerwhbc13/eaetwhbc13) if eaetwhbc13 >10
+gen eaermrbp13        = 100*(eaermrbc13/eaetmrbc13) if eaetmrbc13 >10
+gen eaergtmp13        = 100*(eaergtmc13/eaetgtmc13) if eaetgtmc13 >10 
+gen eaergtfp13        = 100*(eaergtfc13/eaetgtfc13) if eaetgtfc13 >10
+
+
+*EAP English "Ready for College Conditional" percentages
+gen eaercgtbp13       = 100*(eaercgtbc13/eaetgtbc13) if eaetgtbc13 >10
+gen eaercedbp13       = 100*(eaercedbc13/eaetedbc13) if eaetedbc13 >10
+gen eaercaibp13       = 100*(eaercaibc13/eaetaibc13) if eaetaibc13 >10
+gen eaercasbp13       = 100*(eaercasbc13/eaetasbc13) if eaetasbc13 >10
+gen eaercpibp13       = 100*(eaercpibc13/eaetpibc13) if eaetpibc13 >10
+gen eaercfpbp13       = 100*(eaercfpbc13/eaetfpbc13) if eaetfpbc13 >10
+gen eaercltbp13       = 100*(eaercltbc13/eaetltbc13) if eaetltbc13 >10
+gen eaercblbp13       = 100*(eaercblbc13/eaetblbc13) if eaetblbc13 >10
+gen eaercwhbp13       = 100*(eaercwhbc13/eaetwhbc13) if eaetwhbc13 >10
+gen eaercmrbp13       = 100*(eaercmrbc13/eaetmrbc13) if eaetmrbc13 >10
+gen eaercgtmp13       = 100*(eaercgtmc13/eaetgtmc13) if eaetgtmc13 >10
+gen eaercgtfp13       = 100*(eaercgtfc13/eaetgtfc13) if eaetgtfc13 >10 
+
+
+
+*EAP Math "Ready for College" percentages
+gen eamrgtbp13        = 100*(eamrgtbc13/eamtgtbc13) if eamtgtbc13 >10
+gen eamredbp13        = 100*(eamredbc13/eamtedbc13) if eamtedbc13 >10
+gen eamraibp13        = 100*(eamraibc13/eamtaibc13) if eamtaibc13 >10
+gen eamrasbp13        = 100*(eamrasbc13/eamtasbc13) if eamtasbc13 >10
+gen eamrpibp13        = 100*(eamrpibc13/eamtpibc13) if eamtpibc13 >10
+gen eamrfpbp13        = 100*(eamrfpbc13/eamtfpbc13) if eamtfpbc13 >10
+gen eamrltbp13        = 100*(eamrltbc13/eamtltbc13) if eamtltbc13 >10 
+gen eamrblbp13        = 100*(eamrblbc13/eamtblbc13) if eamtblbc13 >10 
+gen eamrwhbp13        = 100*(eamrwhbc13/eamtwhbc13) if eamtwhbc13 >10 
+gen eamrmrbp13        = 100*(eamrmrbc13/eamtmrbc13) if eamtmrbc13 >10 
+gen eamrgtmp13        = 100*(eamrgtmc13/eamtgtmc13) if eamtgtmc13 >10 
+gen eamrgtfp13        = 100*(eamrgtfc13/eamtgtfc13) if eamtgtfc13 >10 
+ 
+
+
+*EAP Math "Ready for College Conditional" percentages
+gen eamrcgtbp13       = 100*(eamrcgtbc13/eamtgtbc13) if eamtgtbc13 >10
+gen eamrcedbp13       = 100*(eamrcedbc13/eamtedbc13) if eamtedbc13 >10                                                            
+gen eamrcaibp13       = 100*(eamrcaibc13/eamtaibc13) if eamtaibc13 >10
+gen eamrcasbp13       = 100*(eamrcasbc13/eamtasbc13) if eamtasbc13 >10
+gen eamrcpibp13       = 100*(eamrcpibc13/eamtpibc13) if eamtpibc13 >10
+gen eamrcfpbp13       = 100*(eamrcfpbc13/eamtfpbc13) if eamtfpbc13 >10
+gen eamrcltbp13       = 100*(eamrcltbc13/eamtltbc13) if eamtltbc13 >10 
+gen eamrcblbp13       = 100*(eamrcblbc13/eamtblbc13) if eamtblbc13 >10 
+gen eamrcwhbp13       = 100*(eamrcwhbc13/eamtwhbc13) if eamtwhbc13 >10 
+gen eamrcmrbp13       = 100*(eamrcmrbc13/eamtmrbc13) if eamtmrbc13 >10 
+gen eamrcgtmp13       = 100*(eamrcgtmc13/eamtgtmc13) if eamtgtmc13 >10 
+gen eamrcgtfp13       = 100*(eamrcgtfc13/eamtgtfc13) if eamtgtfc13 >10 
+ 
+
+*adding labels for collapsed variables
+
+label var eaetgtbc13  "# EAP Eng. students tested (all races, both sexes) 2012-13"
+label var eamtgtbc13  "# EAP Math students tested (all races, both sexes) 2012-13"
+                                                
+label var eaetaibc13  "# EAP Eng. students tested (Am. Ind. or AK nat. non-Hisp) 2012-13"
+label var eamtaibc13  "# EAP Math students tested (Am. Ind. or AK nat. non-Hisp) 2012-13"
+                                                 
+label var eaetasbc13  "# EAP Eng. students tested (Asian non-Hisp) 2012-13"
+label var eamtasbc13  "# EAP Math students tested (Asian non-Hisp) 2012-13"
+                                                 
+label var eaetpibc13  "# EAP Eng. students tested (Pac. Isl. non-Hisp) 2012-13"
+label var eamtpibc13  "# EAP Math students tested (Pac. Isl. non-Hisp) 2012-13"
+                                                 
+label var eaetfpbc13  "# EAP Eng. students tested (Filipino non-Hisp) 2012-13"
+label var eamtfpbc13  "# EAP Math students tested (Filipino non-Hisp) 2012-13"
+                                                 
+label var eaetltbc13  "# EAP Eng. students tested (Hispanic or Latino) 2012-13"
+label var eamtltbc13  "# EAP Math students tested (Hispanic or Latino) 2012-13"
+                                                 
+label var eaetblbc13  "# EAP Eng. students tested (Af. Am. non-Hisp) 2012-13"
+label var eamtblbc13  "# EAP Math students tested (Af. Am. non-Hisp) 2012-13"            
+                                                 
+label var eaetwhbc13  "# EAP Eng. students tested (White non-Hisp) 2012-13"
+label var eamtwhbc13  "# EAP Math students tested (White non-Hisp) 2012-13"              
+                                                 
+label var eaetmrbc13  "# EAP Eng. students tested (2 or more races non-Hisp) 2012-13"
+label var eamtmrbc13  "# EAP Math students tested (2 or more races non-Hisp) 2012-13"    
+                                                 
+label var eaetgtmc13  "# EAP Eng. students tested (all races, male) 2012-13"
+label var eamtgtmc13  "# EAP Math students tested (all races, male) 2012-13"
+                                                 
+label var eaetgtfc13  "# EAP Eng. students tested (all races, female) 2012-13"
+label var eamtgtfc13  "# EAP Math students tested (all races, female) 2012-13"
+ 
+
+
+label var eaergtbc13  "# EAP Eng. Ready for College (all races, both sexes) 2012-13"
+label var eamrgtbc13  "# EAP Math Ready for College (all races, both sexes) 2012-13"
+
+label var eaeraibc13  "# EAP Eng. Ready for College (Am. Ind. or AK nat. non-Hisp) 2012-13"
+label var eamraibc13  "# EAP Math Ready for College (Am. Ind. or AK nat. non-Hisp) 2012-13"
+                                                   
+label var eaerasbc13  "# EAP Eng. Ready for College (Asian non-Hisp) 2012-13"
+label var eamrasbc13  "# EAP Math Ready for College (Asian non-Hisp) 2012-13"
+                                                   
+label var eaerpibc13  "# EAP Eng. Ready for College (Pac. Isl. non-Hisp) 2012-13"
+label var eamrpibc13  "# EAP Math Ready for College (Pac. Isl. non-Hisp) 2012-13"
+                                                   
+label var eaerfpbc13  "# EAP Eng. Ready for College (Filipino non-Hisp) 2012-13"
+label var eamrfpbc13  "# EAP Math Ready for College (Filipino non-Hisp) 2012-13"
+                                                   
+label var eaerltbc13  "# EAP Eng. Ready for College (Hispanic or Latino) 2012-13"
+label var eamrltbc13  "# EAP Math Ready for College (Hispanic or Latino) 2012-13"
+                                                   
+label var eaerblbc13  "# EAP Eng. Ready for College (Af. Am. non-Hisp) 2012-13"
+label var eamrblbc13  "# EAP Math Ready for College (Af. Am. non-Hisp) 2012-13"            
+                                                   
+label var eaerwhbc13  "# EAP Eng. Ready for College (White non-Hisp) 2012-13"
+label var eamrwhbc13  "# EAP Math Ready for College (White non-Hisp) 2012-13"              
+                                                   
+label var eaermrbc13  "# EAP Eng. Ready for College (2 or more races non-Hisp) 2012-13"
+label var eamrmrbc13  "# EAP Math Ready for College (2 or more races non-Hisp) 2012-13"    
+                                                   
+label var eaergtmc13  "# EAP Eng. Ready for College (all races, male) 2012-13"
+label var eamrgtmc13  "# EAP Math Ready for College (all races, male) 2012-13"
+                                                   
+label var eaergtfc13  "# EAP Eng. Ready for College (all races, female) 2012-13"
+label var eamrgtfc13  "# EAP Math Ready for College (all races, female) 2012-13"
+                                                   
+
+
+label var eaercgtbc13 "# EAP Eng. Ready for College Conditional (all races, both sexes) 2012-13"
+label var eamrcgtbc13 "# EAP Math Ready for College Conditional (all races, both sexes) 2012-13"
+                                                              
+label var eaercaibc13 "# EAP Eng. Ready for College Conditional (Am. Ind. or AK nat. non-Hisp) 2012-13"
+label var eamrcaibc13 "# EAP Math Ready for College Conditional (Am. Ind. or AK nat. non-Hisp) 2012-13"
+                                                               
+label var eaercasbc13 "# EAP Eng. Ready for College Conditional (Asian non-Hisp) 2012-13"
+label var eamrcasbc13 "# EAP Math Ready for College Conditional (Asian non-Hisp) 2012-13"
+                                                               
+label var eaercpibc13 "# EAP Eng. Ready for College Conditional (Pac. Isl. non-Hisp) 2012-13"
+label var eamrcpibc13 "# EAP Math Ready for College Conditional (Pac. Isl. non-Hisp) 2012-13"
+                                                               
+label var eaercfpbc13 "# EAP Eng. Ready for College Conditional (Filipino non-Hisp) 2012-13"
+label var eamrcfpbc13 "# EAP Math Ready for College Conditional (Filipino non-Hisp) 2012-13"
+                                                               
+label var eaercltbc13 "# EAP Eng. Ready for College Conditional (Hispanic or Latino) 2012-13"
+label var eamrcltbc13 "# EAP Math Ready for College Conditional (Hispanic or Latino) 2012-13"
+                                                               
+label var eaercblbc13 "# EAP Eng. Ready for College Conditional (Af. Am. non-Hisp) 2012-13"
+label var eamrcblbc13 "# EAP Math Ready for College Conditional (Af. Am. non-Hisp) 2012-13"            
+                                                               
+label var eaercwhbc13 "# EAP Eng. Ready for College Conditional (White non-Hisp) 2012-13"
+label var eamrcwhbc13 "# EAP Math Ready for College Conditional (White non-Hisp) 2012-13"              
+                                                               
+label var eaercmrbc13 "# EAP Eng. Ready for College Conditional (2 or more races non-Hisp) 2012-13"
+label var eamrcmrbc13 "# EAP Math Ready for College Conditional (2 or more races non-Hisp) 2012-13"  
+                                                               
+label var eaercgtmc13 "# EAP Eng. Ready for College Conditional (all races, male) 2012-13"
+label var eamrcgtmc13 "# EAP Math Ready for College Conditional (all races, male) 2012-13"
+                                                               
+label var eaercgtfc13 "# EAP Eng. Ready for College Conditional (all races, female) 2012-13"
+label var eamrcgtfc13 "# EAP Math Ready for College Conditional (all races, female) 2012-13"
+
+ 
+
+label var eaergtbp13  "% EAP Eng. Ready for College (all races, both sexes) 2012-13"
+label var eamrgtbp13  "% EAP Math Ready for College (all races, both sexes) 2012-13"
+
+label var eaeredbp13  "% EAP Eng. Ready for College (econ. disadvantaged, both sexes) 2012-13"
+label var eamredbp13  "% EAP Math Ready for College (econ. disadvantaged, both sexes) 2012-13"
+                   
+label var eaeraibp13  "% EAP Eng. Ready for College (Am. Ind. or AK native non-Hisp) 2012-13"
+label var eamraibp13  "% EAP Math Ready for College (Am. Ind. or AK native non-Hisp) 2012-13"
+
+label var eaerasbp13  "% EAP Eng. Ready for College (Asian non-Hisp) 2012-13"
+label var eamrasbp13  "% EAP Math Ready for College (Asian non-Hisp) 2012-13"
+                     
+label var eaerpibp13  "% EAP Eng. Ready for College (Pac. Isl. non-Hisp) 2012-13"
+label var eamrpibp13  "% EAP Math Ready for College (Pac. Isl. non-Hisp) 2012-13"
+
+label var eaerfpbp13  "% EAP Eng. Ready for College (Filipino non-Hisp) 2012-13"
+label var eamrfpbp13  "% EAP Math Ready for College (Filipino non-Hisp) 2012-13"
+                     
+label var eaerltbp13  "% EAP Eng. Ready for College (Hispanic or Latino) 2012-13"
+label var eamrltbp13  "% EAP Math Ready for College (Hispanic or Latino) 2012-13"
+                        
+label var eaerblbp13  "% EAP Eng. Ready for College (Af. Am. non-Hisp) 2012-13"
+label var eamrblbp13  "% EAP Math Ready for College (Af. Am. non-Hisp) 2012-13"
+                                        
+label var eaerwhbp13  "% EAP Eng. Ready for College (White non-Hisp) 2012-13"
+label var eamrwhbp13  "% EAP Math Ready for College (White non-Hisp) 2012-13"
+                                         
+label var eaermrbp13  "% EAP Eng. Ready for College (2 or more races non-Hisp) 2012-13"
+label var eamrmrbp13  "% EAP Math Ready for College (2 or more races non-Hisp) 2012-13"
+                     
+label var eaergtmp13  "% EAP Eng. Ready for College (all races, male) 2012-13"
+label var eamrgtmp13  "% EAP Math Ready for College (all races, male) 2012-13"
+                     
+label var eaergtfp13  "% EAP Eng. Ready for College (all races, female) 2012-13"
+label var eamrgtfp13  "% EAP Math Ready for College (all races, female) 2012-13"
+  
+
+
+label var eaercgtbp13 "% EAP Eng. Ready for College Conditional (all races, both sexes) 2012-13"
+label var eamrcgtbp13 "% EAP Math Ready for College Conditional (all races, both sexes) 2012-13"
+
+label var eaercedbp13 "% EAP Eng. Ready for College Conditional (ec. disadvantaged, both sexes) 2012-13"
+label var eamrcedbp13 "% EAP Math Ready for College Conditional (ec. disadvantaged, both sexes) 2012-13"
+                     
+label var eaercaibp13 "% EAP Eng. Ready for College Conditional (Am. Ind. or AK nat. non-Hisp) 2012-13"
+label var eamrcaibp13 "% EAP Math Ready for College Conditional (Am. Ind. or AK nat. non-Hisp) 2012-13"
+
+label var eaercasbp13 "% EAP Eng. Ready for College Conditional (Asian non-Hisp) 2012-13"
+label var eamrcasbp13 "% EAP Math Ready for College Conditional (Asian non-Hisp) 2012-13"
+                         
+label var eaercpibp13 "% EAP Eng. Ready for College Conditional (Pac. Isl. non-Hisp) 2012-13"
+label var eamrcpibp13 "% EAP Math Ready for College Conditional (Pac. Isl. non-Hisp) 2012-13"
+
+label var eaercfpbp13 "% EAP Eng. Ready for College Conditional (Filipino non-Hisp) 2012-13"
+label var eamrcfpbp13 "% EAP Math Ready for College Conditional (Filipino non-Hisp) 2012-13"
+                       
+label var eaercltbp13 "% EAP Eng. Ready for College Conditional (Hispanic or Latino) 2012-13"
+label var eamrcltbp13 "% EAP Math Ready for College Conditional (Hispanic or Latino) 2012-13"
+                             
+label var eaercblbp13 "% EAP Eng. Ready for College Conditional (Af. Am. non-Hisp) 2012-13"
+label var eamrcblbp13 "% EAP Math Ready for College Conditional (Af. Am. non-Hisp) 2012-13"                       
+                    
+label var eaercwhbp13 "% EAP Eng. Ready for College Conditional (White non-Hisp) 2012-13"
+label var eamrcwhbp13 "% EAP Math Ready for College Conditional (White non-Hisp) 2012-13"                       
+                      
+label var eaercmrbp13 "% EAP Eng. Ready for College Conditional (2 or more races non-Hisp) 2012-13"
+label var eamrcmrbp13 "% EAP Math Ready for College Conditional (2 or more races non-Hisp) 2012-13"  
+                       
+label var eaercgtmp13 "% EAP Eng. Ready for College Conditional (all races, male) 2012-13"
+label var eamrcgtmp13 "% EAP Math Ready for College Conditional (all races, male) 2012-13"
+                       
+label var eaercgtfp13 "% EAP Eng. Ready for College Conditional (all races, female) 2012-13"
+label var eamrcgtfp13 "% EAP Math Ready for College Conditional (all races, female) 2012-13"
+
+
+
+
+*merging the entities file (school and district names) to the EAP results file
+*merge 1:1 CDSCode using "C:\Users\lsalazar\Syncplicity Folders\lsalazar (IT Admin)\LAERI\cff_laeri_collegegoing\dta\cde_hs_data_reformat\CA2013Entities_reformat" 
+merge 1:1 CDSCode using "I:\LAERI\cff_laeri_collegegoing\dta\cde_hs_data_reformat\CA2013Entities_reformat" 
+
+
+
+*everything matches, so we can drop the _merge variable
+drop _merge
+
+*keeping grand total percentage and counts stratified by race of students tested, ready for college, and ready for college conditions
+keep CDSCode  *p13 EAP_*
+
+
+
+*save "C:\Users\lsalazar\Syncplicity Folders\lsalazar (IT Admin)\LAERI\cff_laeri_collegegoing\dta\cde_hs_data_reformat\EAP2013_reformat", replace
+save "I:\LAERI\cff_laeri_collegegoing\dta\cde_hs_data_reformat\EAP2013_reformat", replace
+
+
+clear
+set more off
+
+//  #8
+//  Importing the EdTrust "FAFSArates" data from http://financialaid.edtrustwest.org/
+//  FAFSA and Cal Grant completion rates by school for LA County
+
+// QUESTION FOR OJ:
+	* What are we trying to capture with this? There are multiple entries for each school (2012, 2013, 2014) - > Do we want a sum across all 3 years? Should I collapse?
+	* ADD: Cal Grant Rate
+	* Keep 12, 13, 14, --> Make long
+import excel using "FAFSAratesCACountySchools.xlsx", firstrow clear
+
+
+*Renaming CDSCode and changing it from string to numeric for later merge
+*tostring cdscode, gen(cds1) format(%14.0f)
+
+gen districtcode = substr(CDSCode,4,5)
+gen countycode   = substr(CDSCode,2,2)
+gen schoolcode   = substr(CDSCode,9,7)
+
+*keep if countycode == "19"
+rename CDSCode cdscode
+
+
+*changing CDSCode from string to numeric for later merge
+gen CDSCode = countycode + districtcode + schoolcode
+*destring CDSCode, replace
+*format CDSCode %14.0f
+
+
+gen       etfsgtbp14 = 100*FAFSACompletion
+gen       etfsgtbc14 = FAFSAComplete   
+ 
+label var etfsgtbp14 "FAFSA completion rate (%) (all races, both sexes) 2013-14"
+label var etfsgtbc14 "# of FAFSAs completed (all races, both sexes) 2013-14"   
+
+*Shortening a couple of variable names that are too long to accommodate source prefix
+rename SchoolDistrictInAssmblyDist SchoolDistInAssmblyDist
+rename SchoolDistrictinSenateDist  SchoolDistinSenateDist
+rename Schooldistrictsinlegislative Schooldistsinlegislative
+rename Schoolsinlegislativedistrict Schoolsinlegislativedist
+
+*Appending a source prefix to each variable name so I know each variable's origin
+*post-merge
+foreach var in School SchoolDistrict{
+  rename `var' EdTrust_`var'
+}
+*
+
+keep CDSCode EdTrust_School EdTrust_SchoolDistrict etfsgtbp14 etfsgtbc14 YearCalc Year
+
+order CDSCode EdTrust_School EdTrust_SchoolDistrict etfsgtbp14 etfsgtbc14 YearCalc Year
+
+
+* School with CDSCode 37683380107177 had a name change from 2012-2013. This code is to fix that, but also note that in 2012 school was "Crawford Multimedia and Visual Arts" and in 2013-2014 was "Crawford High"
+replace EdTrust_School="Crawford High" if CDSCode=="37683380107177" & Year==2012
+
+reshape wide etfsgtbp14 etfsgtbc14 YearCalc, i(CDSCode) j(Year)
+
+
+*save "C:\Users\lsalazar\Syncplicity Folders\lsalazar (IT Admin)\LAERI\cff_laeri_collegegoing\dta\cde_hs_data_reformat\FAFSAratesCACountyschools_reformat", replace
+save "I:\LAERI\cff_laeri_collegegoing\dta\cde_hs_data_reformat\FAFSAratesCACountyschools_reformat", replace
+ 
+
+
+clear
+set more off
+
+//  #9
+//  Merging the various data files by CDSCode (unique county/district/school ID).
+
+cd "I:\LAERI\cff_laeri_collegegoing\dta\cde_hs_data_reformat"
+
+use "pubschls_reformat", clear
+
+merge 1:1 CDSCode using "frpm1415_reformat"
+rename _merge _merge_frpm1415
+
+merge 1:1 CDSCode using "filesenr1415_reformat"
+rename _merge _merge_filesenr1415
+
+merge 1:1 CDSCode using "filescohort_reformat"
+rename _merge _merge_filescohort
+
+merge 1:1 CDSCode using "filessfsfc11_reformat"
+rename _merge _merge_filessfsfc11
+
+merge 1:1 CDSCode using "filesgrads_reformat"
+rename _merge _merge_filesgrads
+
+merge 1:1 CDSCode using "EAP2013_reformat"
+rename _merge _merge_EAP2013
+
+merge 1:1 CDSCode using "FAFSAratesCACountyschools_reformat"
+rename _merge _merge_FAFSArates
+
+
+drop if _merge_frpm1415==2
+drop if _merge_filesenr1415==2
+drop if _merge_filescohort==2
+drop if _merge_filessfsfc11==2
+drop if _merge_filesgrads==2
+drop if _merge_EAP2013==2
+
+//  #10
+//  Trimming the data of irrelevant observations
+
+
+*keeping Los Angeles County schools
+*keep if County=="Los Angeles" | frpm1415_CountyName=="Los Angeles" | ///
+        *filesenr1415_county=="Los Angeles" | EAP_countyname=="Los Angeles"
+
+*dropping 12 "pending" schools and 2 "active" schools that opened in 2015 and
+*have no data associated with them
+*drop if StatusType == "Pending"
+*drop if StatusType == "Active" & NCESSchool == ""
+		
+
+*scanning for mis-labeled schools...
+tab GSserved if universe==0 & EILCode == "ELEMHIGH"
+tab GSserved if universe==0 & EILCode == "HS"
+tab GSoffered if universe==0 & EILCode == "ELEMHIGH" 
+tab GSoffered if universe==0 & EILCode == "HS"
+
+tab District if Charter == "Y" & universe ==1, m
+
+*cleaning mis-labeled schools
+replace universe=1 if universe==0 & EILCode=="ELEMHIGH"
+replace universe=1 if universe==0 & EILCode == "HS"
+
+*browsing schools that didn't match in the merges
+*browse pubschls_School pubschls_District pubschls_OpenDate pubschls_ClosedDate _merge_filesgrads _merge_filesgradaf _merge_filesenr1314 _merge_filesenr1213 _merge_frpm1314 _merge_filessfsfc11 _merge_FAFSArates _merge_EAP2013 _merge_filescohort if _merge_filesgrads ==1 | _merge_filesgradaf ==1 | _merge_filesenr1314 ==1 | _merge_filesenr1213 ==1 | _merge_frpm1314 ==1 | _merge_filessfsfc11 ==1 | _merge_FAFSArates ==1 | _merge_EAP2013 ==1 | _merge_filescohort ==1
+
+
+keep if universe ==1
+
+
+*dropping irrelevant variables
+drop StatusType StreetAbr MailStreet MailStrAbr MailCity MailZip MailState Phone Ext ///
+Website ClosedDate DOC DOCType SOC EdOpsCode EdOpsName EILName Virtual-universe
+
+order frpm1415_* filesenr1415_* filessfsfc11_* EAP_* EdTrust_* _merge*, last
+
+drop frpm1415_* filesenr1415_* filessfsfc11_* EAP_* EdTrust_* _merge*
+
+*dropping 1664 schools with no (or missing) grade 12 enrollment headcount in 2014-15
+drop if cd12gtbc15==0 | cd12gtbc15==.
+
+*dropping 101 "Special Ed Schools"...
+drop if SOCType == "Special Education Schools (Public)"
+
+*...80 "District Community Day Schools"
+drop if SOCType == "District Community Day Schools"
+
+*...and 13 "Opportunity Schools"
+drop if SOCType == "Opportunity Schools"
+
+*reformatting/relabeling/renaming CDE "pubschls" variables
+*format CDSCode %14.0f
+
+label var CDSCode     "California CDS (county-district-school) code"
+label var NCESDist    "NCES district code"
+label var NCESSchool  "NCES school code"
+label var County      "county name"
+label var District    "district or administrative authority name"
+label var School      "school name"
+label var Street      "street address of school"
+label var City        "city where school is located"
+label var Zip         "zip code of school"
+label var State       "state where school is located"
+label var OpenDate    "date school opened"
+label var Charter     "school is a charter school (Y/N)"
+label var CharterNum  "charter school number"
+label var FundingType "charter school funding type"
+label var SOCType     "school ownership code type"
+label var EILCode     "educational instruction level code"
+label var GSoffered   "grade span offered or supported by school"
+label var GSserved    "grade span served by school, most recent enrollment"
+
+rename CDSCode     cdscode
+rename NCESDist    ncesdist
+rename NCESSchool  ncesschool
+rename County      county
+rename District    district
+rename School      school
+rename Street      street
+rename City        city
+rename Zip         zipcode
+rename State       state
+rename OpenDate    opendate
+rename Charter     charter
+rename CharterNum  charternum
+rename FundingType fundingtype
+rename SOCType     soctype
+rename EILCode     eilcode
+rename GSoffered   gsoffered
+rename GSserved    gsserved    
+
+
+
+*save "C:\cff_laeri_collegegoing\dta\LACountyHSData", replace
+save "I:\LAERI\cff_laeri_collegegoing\dta\CACountyHSData", replace
+
+export excel using "I:\LAERI\cff_laeri_collegegoing\dta\LACountyHSData.xlsx", firstrow(var) replace
+
+export excel using "I:\LAERI\cff_laeri_collegegoing\dta\LACountyHSDataL.xlsx", firstrow(varl) replace
+
+
+
+		
+log close
+exit
